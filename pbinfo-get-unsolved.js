@@ -39,7 +39,7 @@ function addLog(msg) {
    msgEl.classList += 'logMessage'
 
    logDiv.appendChild(msgEl)
-   window.scroll(0, window.innerHeight)
+   window.scroll(0, logDiv.scrollHeight)
 }
 
 
