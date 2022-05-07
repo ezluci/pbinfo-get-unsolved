@@ -58,27 +58,92 @@ addLog(`Link către categoria de probleme: <a href="${pageLink}"><i>${pageLink}<
 
 const problems = []
 let table = document.createElement('table')
+const sorted = {cnt: 1, id: 0, score: 0, difficulty: 0}
 table.style.width = '40%'
 table.style.minWidth = '350px'
 table.style.maxWidth = '500px'
 
 
-function createProblemsTable() {
+function sortTable(sortType)
+{
+   if (sorted[sortType] === 0)
+   {
+      ['cnt', 'id', 'score', 'difficulty'].filter((val) => {return val !== sortType}).forEach(type => {
+         sorted[type] = 0
+      })
+
+      sorted[sortType] = 1
+   }
+   else
+      sorted[sortType] *= -1
+   
+   if (sorted[sortType] === 1) // ascending
+      for (let i = 0; i < problems.length; ++i)
+         for (let j = i+1; j < problems.length; ++j)
+            if (problems[i][sortType] > problems[j][sortType])
+               [problems[i], problems[j]] = [problems[j], problems[i]] // swap
+   if (sorted[sortType] === -1) // descending
+      for (let i = 0; i < problems.length; ++i)
+         for (let j = i+1; j < problems.length; ++j)
+            if (problems[i][sortType] < problems[j][sortType])
+               [problems[i], problems[j]] = [problems[j], problems[i]] // swap
+   
+   updateTable()
+}
+
+
+function updateTable() {
+
+   function sortSymbol(sortType)
+   {
+      if (sorted[sortType] === 1)
+         return '&#9660;'
+      if (sorted[sortType] === -1)
+         return '&#9650;'
+      return '&#9654;'
+   }
+
+   function numberToDifficulty(nr)
+   {
+      if (nr === 0)
+         return 'ușoară'
+      if (nr === 1)
+         return 'medie'
+      if (nr === 2)
+         return 'dificilă'
+      if (nr === 3)
+         return 'concurs'
+   }
+
+   function numberToDifficultyColor(nr)
+   {
+      if (nr === 0)
+         return '5cb85c'
+      if (nr === 1)
+         return 'f0ad4e'
+      if (nr === 2)
+         return '5bc0de'
+      if (nr === 3)
+         return 'd9534f'
+   }
 
    table.innerHTML = `
       <tr style="font-weight: bold;">
-         <td>Nume</td>
-         <td>Punctaj</td>
-         <td>Dificultate</td>
+         <td><a onclick="sortTable('cnt')">Contor ${sortSymbol('cnt')}</a></td>
+         <td><a onclick="sortTable('id')">Nume ${sortSymbol('id')}</a></td>
+         <td><a onclick="sortTable('score')">Punctaj ${sortSymbol('score')}</a></td>
+         <td><a onclick="sortTable('difficulty')">Dificultate ${sortSymbol('difficulty')}</a></td>
       </tr>
    `
    
+   let i = 1
    problems.forEach(problem => {
       const row = document.createElement('tr')
       row.innerHTML = `
+         <td>${problem.cnt}.</td>
          <td><a href="${problem.link}" target="_blank">#${problem.id} - ${problem.name}</a></td>
          <td>${problem.score}p</td>
-         <td><span style="color: white; background-color:#${problem.difficulty === 'ușoară' ? '5cb85c' : problem.difficulty === 'medie' ? 'f0ad4e' : problem.difficulty === 'dificilă' ? '5bc0de' : 'd9534f'}">${problem.difficulty}</span></td>
+         <td><span style="color: white; background-color:#${numberToDifficultyColor(problem.difficulty)}">${numberToDifficulty(problem.difficulty)}</span></td>
       `
 
       table.appendChild(row)
@@ -101,14 +166,15 @@ function createProblemsTable() {
 
       for (let i = 0; i < pageProblems.length; ++i) {
 
-         const id = pageProblems[i].children[0].children[0].children[0].innerText.trim().slice(1)
+         const cnt = problems.length + 1
+         const id = parseInt(pageProblems[i].children[0].children[0].children[0].innerText.trim().slice(1))
          const name = pageProblems[i].children[0].children[0].children[1].innerText.trim()
          const link = pageProblems[i].children[0].children[0].children[1].href.trim()
          const difficulty = 
-               (pageProblems[i].getElementsByClassName('list-unstyled list-inline')[0].innerText.includes('ușoară') ? 'ușoară' :
-               pageProblems[i].getElementsByClassName('list-unstyled list-inline')[0].innerText.includes('medie') ? 'medie' :
-               pageProblems[i].getElementsByClassName('list-unstyled list-inline')[0].innerText.includes('dificilă') ? 'dificilă' :
-               'concurs')
+               (pageProblems[i].getElementsByClassName('list-unstyled list-inline')[0].innerText.includes('ușoară') ? 0 :
+               pageProblems[i].getElementsByClassName('list-unstyled list-inline')[0].innerText.includes('medie') ? 1 :
+               pageProblems[i].getElementsByClassName('list-unstyled list-inline')[0].innerText.includes('dificilă') ? 2 :
+               3)
          let score = pageProblems[i].children[2].children[1].children[0].innerText.trim().slice(7).trim()
 
          if (score === '100') {
@@ -116,12 +182,12 @@ function createProblemsTable() {
          } else {
             if (score === '')
                score = '0'
-            problems.push({id: id, name: name, link: link, difficulty: difficulty, score: score})
+            problems.push({cnt: cnt, id: id, name: name, link: link, difficulty: difficulty, score: score})
          }
       }
       
       if (pageProblems.length === 0) {
-         createProblemsTable()
+         updateTable()
          addLog(`<u>Am terminat de extras problemele.</u> Sunt ${problems.length} probleme nerezolvate. <a onclick="document.body.appendChild(table)">Deschide tabelul cu probleme.</a>`)
          return
       } else {
