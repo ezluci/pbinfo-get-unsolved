@@ -162,6 +162,7 @@ function updateTable() {
       reqPageEl.innerHTML = xhr.response
       const pageProblems = reqPageEl.getElementsByClassName('col-lg-8 col-md-8')[0].getElementsByClassName('panel panel-info')
       let solvedProbsPage = 0
+      let allProbsPage = 0
 
 
       for (let i = 0; i < pageProblems.length; ++i) {
@@ -177,6 +178,11 @@ function updateTable() {
                3)
          let score = pageProblems[i].children[2].children[1].children[0].innerText.trim().slice(7).trim()
 
+         if (problems.findIndex((val => {return val.id === id})) !== -1)
+            continue
+
+         allProbsPage ++
+
          if (score === '100') {
             solvedProbsPage ++
          } else {
@@ -188,10 +194,10 @@ function updateTable() {
       
       if (pageProblems.length === 0) {
          updateTable()
-         addLog(`<u>Am terminat de extras problemele.</u> Sunt ${problems.length} probleme nerezolvate. <a onclick="document.body.appendChild(table)">Deschide tabelul cu probleme.</a>`)
+         addLog(`<u>Am terminat de extras problemele.</u> Sunt ${problems.length} probleme nerezolvate. <a onclick="document.body.appendChild(table); window.scrollBy(0, 150)">Deschide tabelul cu probleme.</a>`)
          return
       } else {
-         addLog(`Pagina ${pag} are ${solvedProbsPage}/${pageProblems.length} probleme rezolvate.`)
+         addLog(`Pagina ${pag} are ${solvedProbsPage}/${allProbsPage} probleme rezolvate.`)
       }
 
       Start(pag+1)
