@@ -14,10 +14,23 @@ pageLink = pageLink.replaceAll(/(\?|&)start\d+/g, '')
 // clearing site
 document.head.innerHTML = ''
 document.body.innerHTML = ''
+
 const title = document.createElement('h2')
 title.style.display = 'block'
 title.innerHTML = '<span style="color: red"> pbinfo-get-unsolved.js</span>. <a href="https://github.com/ezluci/pbinfo-get-unsolved" target="_blank"><i>GitHub</i></a>'
 document.body.appendChild(title)
+
+const style = document.createElement('style')
+style.innerHTML = `
+   a:hover {
+      cursor: pointer;
+   }
+
+   td {
+      border: 1px solid black;
+   }
+`
+document.head.appendChild(style)
 
 
 // logging
@@ -44,12 +57,31 @@ document.body.appendChild(reqPageEl)
 addLog(`Link către categoria de probleme: <a href="${pageLink}"><i>${pageLink}</i></a>`)
 
 const problems = []
+let table = document.createElement('table')
+table.style.width = '40%'
+table.style.minWidth = '350px'
+table.style.maxWidth = '500px'
 
 
-function logAllProblems() {
-   addLog(`<u>Am terminat de extras problemele.</u> Sunt ${problems.length} probleme nerezolvate:`)
+function createProblemsTable() {
+
+   table.innerHTML = `
+      <tr style="font-weight: bold;">
+         <td>Nume</td>
+         <td>Punctaj</td>
+         <td>Dificultate</td>
+      </tr>
+   `
+   
    problems.forEach(problem => {
-      addLog(`<a href="${problem.link}" target="_blank">#${problem.id} - ${problem.name}</a> (${problem.score}p) <span style="color: white; background-color:#${problem.difficulty === 'ușoară' ? '5cb85c' : problem.difficulty === 'medie' ? 'f0ad4e' : problem.difficulty === 'dificilă' ? '5bc0de' : 'd9534f'}">${problem.difficulty}</span>`)
+      const row = document.createElement('tr')
+      row.innerHTML = `
+         <td><a href="${problem.link}" target="_blank">#${problem.id} - ${problem.name}</a></td>
+         <td>${problem.score}p</td>
+         <td><span style="color: white; background-color:#${problem.difficulty === 'ușoară' ? '5cb85c' : problem.difficulty === 'medie' ? 'f0ad4e' : problem.difficulty === 'dificilă' ? '5bc0de' : 'd9534f'}">${problem.difficulty}</span></td>
+      `
+
+      table.appendChild(row)
    })
 }
 
@@ -89,7 +121,8 @@ function logAllProblems() {
       }
       
       if (pageProblems.length === 0) {
-         logAllProblems()
+         createProblemsTable()
+         addLog(`<u>Am terminat de extras problemele.</u> Sunt ${problems.length} probleme nerezolvate. <a onclick="document.body.appendChild(table)">Deschide tabelul cu probleme.</a>`)
          return
       } else {
          addLog(`Pagina ${pag} are ${solvedProbsPage}/${pageProblems.length} probleme rezolvate.`)
