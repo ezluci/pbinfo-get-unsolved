@@ -17,7 +17,7 @@ document.body.innerHTML = ''
 
 const title = document.createElement('h2')
 title.style.display = 'block'
-title.innerHTML = '<span style="color: red"> pbinfo-get-unsolved.js</span>. <a href="https://github.com/ezluci/pbinfo-get-unsolved" target="_blank"><i>GitHub</i></a>'
+title.innerHTML = '<span style="color: red";> pbinfo-get-unsolved.js</span>. <a href="https://github.com/ezluci/pbinfo-get-unsolved" target="_blank"><i>GitHub</i></a>'
 document.body.appendChild(title)
 
 const style = document.createElement('style')
@@ -58,17 +58,17 @@ addLog(`Link către categoria de probleme: <a href="${pageLink}"><i>${pageLink}<
 
 const problems = []
 let table = document.createElement('table')
-const sorted = {cnt: 1, id: 0, score: 0, difficulty: 0}
-table.style.width = '40%'
-table.style.minWidth = '350px'
-table.style.maxWidth = '500px'
+const sorted = {cnt: 1, id: 0, score: 0, difficulty: 0, source: 0}
+table.style.width = '50%'
+table.style.minWidth = '450px'
+table.style.maxWidth = '750px'
 
 
 function sortTable(sortType)
 {
    if (sorted[sortType] === 0)
    {
-      ['cnt', 'id', 'score', 'difficulty'].filter((val) => {return val !== sortType}).forEach(type => {
+      ['cnt', 'id', 'score', 'difficulty', 'source'].filter((val) => {return val !== sortType}).forEach(type => {
          sorted[type] = 0
       })
 
@@ -129,10 +129,11 @@ function updateTable() {
 
    table.innerHTML = `
       <tr style="font-weight: bold;">
-         <td><a onclick="sortTable('cnt')">Contor ${sortSymbol('cnt')}</a></td>
-         <td><a onclick="sortTable('id')">Nume ${sortSymbol('id')}</a></td>
-         <td><a onclick="sortTable('score')">Punctaj ${sortSymbol('score')}</a></td>
-         <td><a onclick="sortTable('difficulty')">Dificultate ${sortSymbol('difficulty')}</a></td>
+         <td style="min-width: 5em;"><a onclick="sortTable('cnt')">Contor ${sortSymbol('cnt')}</a></td>
+         <td style="min-width: 10em;"><a onclick="sortTable('id')">Nume ${sortSymbol('id')}</a></td>
+         <td style="min-width: 5em;"><a onclick="sortTable('score')">Punctaj ${sortSymbol('score')}</a></td>
+         <td style="min-width: 6.5em;"><a onclick="sortTable('difficulty')">Dificultate ${sortSymbol('difficulty')}</a></td>
+         <td style="min-width: 10em;"><a onclick="sortTable('source')">Sursa problemei ${sortSymbol('source')}</a></td>
       </tr>
    `
    
@@ -143,7 +144,8 @@ function updateTable() {
          <td>${problem.cnt}.</td>
          <td><a href="${problem.link}" target="_blank">#${problem.id} - ${problem.name}</a></td>
          <td>${problem.score}p</td>
-         <td><span style="color: white; background-color:#${numberToDifficultyColor(problem.difficulty)}">${numberToDifficulty(problem.difficulty)}</span></td>
+         <td><span style="color: white; background-color:#${numberToDifficultyColor(problem.difficulty)};">${numberToDifficulty(problem.difficulty)}</span></td>
+         <td>${problem.source}</td>
       `
 
       table.appendChild(row)
@@ -176,6 +178,7 @@ function updateTable() {
                pageProblems[i].getElementsByClassName('list-unstyled list-inline')[0].innerText.includes('medie') ? 1 :
                pageProblems[i].getElementsByClassName('list-unstyled list-inline')[0].innerText.includes('dificilă') ? 2 :
                3)
+         let source = pageProblems[i].children[2].children[0].children[0]
          let score = pageProblems[i].children[2].children[1].children[0].innerText.trim().slice(7).trim()
 
          if (problems.findIndex((val => {return val.id === id})) !== -1)
@@ -183,12 +186,17 @@ function updateTable() {
 
          allProbsPage ++
 
+         if (source.tagName === 'P')
+            source = source.innerText.trim()
+         else
+            source = ''
+
          if (score === '100') {
             solvedProbsPage ++
          } else {
             if (score === '')
                score = '0'
-            problems.push({cnt: cnt, id: id, name: name, link: link, difficulty: difficulty, score: score})
+            problems.push({cnt: cnt, id: id, name: name, link: link, difficulty: difficulty, score: score, source: source})
          }
       }
       
