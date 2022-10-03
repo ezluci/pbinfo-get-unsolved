@@ -28,6 +28,7 @@ style.innerHTML = `
 
    td {
       border: 1px solid black;
+      user-select: none;
    }
 `
 document.head.appendChild(style)
@@ -58,17 +59,17 @@ addLog(`Link către categoria de probleme: <a href="${pageLink}"><i>${pageLink}<
 
 const problems = []
 let table = document.createElement('table')
-const sorted = {cnt: 1, id: 0, score: 0, difficulty: 0, source: 0}
-table.style.width = '50%'
+const sorted = {cnt: 1, id: 0, score: 0, difficulty: 0, postedBy_name: 0, author: 0, source: 0}
+table.style.width = '75%'
 table.style.minWidth = '450px'
-table.style.maxWidth = '750px'
+table.style.maxWidth = '1050px'
 
 
 function sortTable(sortType)
 {
    if (sorted[sortType] === 0)
    {
-      ['cnt', 'id', 'score', 'difficulty', 'source'].filter((val) => {return val !== sortType}).forEach(type => {
+      ['cnt', 'id', 'score', 'difficulty', 'postedBy_name', 'author', 'source'].filter((val) => {return val !== sortType}).forEach(type => {
          sorted[type] = 0
       })
 
@@ -133,6 +134,8 @@ function updateTable() {
          <td style="min-width: 10em;"><a onclick="sortTable('id')">Nume ${sortSymbol('id')}</a></td>
          <td style="min-width: 5em;"><a onclick="sortTable('score')">Punctaj ${sortSymbol('score')}</a></td>
          <td style="min-width: 6.5em;"><a onclick="sortTable('difficulty')">Dificultate ${sortSymbol('difficulty')}</a></td>
+         <td style="min-width: 13em;"><a onclick="sortTable('postedBy_name')">Postată de ${sortSymbol('postedBy_name')}</a></td>
+         <td style="min-width: 10em;"><a onclick="sortTable('author')">Autor ${sortSymbol('author')}</a></td>
          <td style="min-width: 10em;"><a onclick="sortTable('source')">Sursa problemei ${sortSymbol('source')}</a></td>
       </tr>
    `
@@ -145,6 +148,8 @@ function updateTable() {
          <td><a href="${problem.link}" target="_blank">#${problem.id} - ${problem.name}</a></td>
          <td>${problem.score}p</td>
          <td><span style="color: white; background-color:#${numberToDifficultyColor(problem.difficulty)};">${numberToDifficulty(problem.difficulty)}</span></td>
+         <td><a target="_blank" href="${problem.postedBy_link}"><img style="vertical-align: middle; width: 1.1em;" src="${problem.postedBy_img}"> ${problem.postedBy_name}</a></td>
+         <td>${problem.author}</td>
          <td>${problem.source}</td>
       `
 
@@ -179,7 +184,18 @@ function updateTable() {
                pageProblems[i].getElementsByClassName('list-unstyled list-inline')[0].innerText.includes('dificilă') ? 2 :
                3)
          let source = pageProblems[i].children[2].children[0].children[0]
-         let score = pageProblems[i].children[2].children[1].children[0].innerText.trim().slice(7).trim()
+         const postedBy_DOM = pageProblems[i].getElementsByClassName('fas fa-upload')[0].parentNode.children[1].children[0]
+         const postedBy_link = postedBy_DOM.href
+         const postedBy_name = postedBy_DOM.innerText.trim()
+         let postedBy_img = postedBy_DOM.children[0].src
+         if (new URL(postedBy_img).hostname === 'www.gravatar.com')
+            postedBy_img = postedBy_img.replace(/&s=*/, '&s=128')
+         else if (new URL(postedBy_img).hostname === 'www.pbinfo.ro')
+            postedBy_img = postedBy_img.replace(/&gsize=*/, '&gsize=128')
+         else
+            console.error('pbinfo-get-unsolved.js\nUnknown link format for profile image')
+         let author = pageProblems[i].getElementsByClassName('far fa-edit')[0]?.parentNode.innerText.trim()
+         let score = parseInt(pageProblems[i].children[2].children[1].children[0].innerText.trim().slice(7).trim())
 
          if (problems.findIndex((val => {return val.id === id})) !== -1)
             continue
@@ -191,12 +207,15 @@ function updateTable() {
          else
             source = ''
 
-         if (score === '100') {
+         if (!author)
+            author = ''
+         
+         if (score === 100) {
             solvedProbsPage ++
          } else {
-            if (score === '')
-               score = '0'
-            problems.push({cnt: cnt, id: id, name: name, link: link, difficulty: difficulty, score: score, source: source})
+            if (isNaN(score))
+               score = 0
+            problems.push({cnt, id, name, link, difficulty, score, postedBy_link, postedBy_name, postedBy_img, author, source})
          }
       }
       
