@@ -28,7 +28,6 @@ style.innerHTML = `
 
    td {
       border: 1px solid black;
-      user-select: none;
    }
 `
 document.head.appendChild(style)
@@ -130,13 +129,13 @@ function updateTable() {
 
    table.innerHTML = `
       <tr style="font-weight: bold;">
-         <td style="min-width: 5em;"><a onclick="sortTable('cnt')">Contor ${sortSymbol('cnt')}</a></td>
-         <td style="min-width: 10em;"><a onclick="sortTable('id')">Nume ${sortSymbol('id')}</a></td>
-         <td style="min-width: 5em;"><a onclick="sortTable('score')">Punctaj ${sortSymbol('score')}</a></td>
-         <td style="min-width: 6.5em;"><a onclick="sortTable('difficulty')">Dificultate ${sortSymbol('difficulty')}</a></td>
-         <td style="min-width: 13em;"><a onclick="sortTable('postedBy_name')">Postată de ${sortSymbol('postedBy_name')}</a></td>
-         <td style="min-width: 10em;"><a onclick="sortTable('author')">Autor ${sortSymbol('author')}</a></td>
-         <td style="min-width: 10em;"><a onclick="sortTable('source')">Sursa problemei ${sortSymbol('source')}</a></td>
+         <td style="min-width: 5em; user-select: none;"><a onclick="sortTable('cnt')">Contor ${sortSymbol('cnt')}</a></td>
+         <td style="min-width: 10em; user-select: none;"><a onclick="sortTable('id')">Nume ${sortSymbol('id')}</a></td>
+         <td style="min-width: 5em; user-select: none;"><a onclick="sortTable('score')">Punctaj ${sortSymbol('score')}</a></td>
+         <td style="min-width: 6.5em; user-select: none;"><a onclick="sortTable('difficulty')">Dificultate ${sortSymbol('difficulty')}</a></td>
+         <td style="min-width: 13em; user-select: none;"><a onclick="sortTable('postedBy_name')">Postată de ${sortSymbol('postedBy_name')}</a></td>
+         <td style="min-width: 10em; user-select: none;"><a onclick="sortTable('author')">Autor ${sortSymbol('author')}</a></td>
+         <td style="min-width: 10em; user-select: none;"><a onclick="sortTable('source')">Sursa problemei ${sortSymbol('source')}</a></td>
       </tr>
    `
    
