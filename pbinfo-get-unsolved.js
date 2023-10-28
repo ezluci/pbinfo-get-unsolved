@@ -64,32 +64,61 @@ table.style.minWidth = '450px'
 table.style.maxWidth = '1050px'
 
 
-function sortTable(sortType)
-{
-   if (sorted[sortType] === 0)
-   {
-      ['cnt', 'id', 'score', 'difficulty', 'postedBy_name', 'author', 'source'].filter((val) => {return val !== sortType}).forEach(type => {
-         sorted[type] = 0
-      })
-
-      sorted[sortType] = 1
-   }
-   else
-      sorted[sortType] *= -1
-   
-   if (sorted[sortType] === 1) // ascending
-      for (let i = 0; i < problems.length; ++i)
-         for (let j = i+1; j < problems.length; ++j)
-            if (problems[i][sortType] > problems[j][sortType])
-               [problems[i], problems[j]] = [problems[j], problems[i]] // swap
-   if (sorted[sortType] === -1) // descending
-      for (let i = 0; i < problems.length; ++i)
-         for (let j = i+1; j < problems.length; ++j)
-            if (problems[i][sortType] < problems[j][sortType])
-               [problems[i], problems[j]] = [problems[j], problems[i]] // swap
-   
-   updateTable()
+function quickSort(array, left, right, sortType) {
+  let index;
+  if (array.length > 1) {
+      index = partition(array, left, right, sortType); //index returned from partition
+      if (left < index - 1) { //more elements on the left side of the pivot
+          quickSort(array, left, index - 1, sortType);
+      }
+      if (index < right) { //more elements on the right side of the pivot
+          quickSort(array, index, right, sortType);
+      }
+  }
+  return array;
 }
+
+function partition(array, left, right, sortType) {
+  let pivot = array[Math.floor((right + left) / 2)][sortType],
+      i = left, //left pointer
+      j = right; //right pointer
+  while (i <= j) {
+      while (array[i][sortType] < pivot) {
+          i++;
+      }
+      while (array[j][sortType] > pivot) {
+          j--;
+      }
+      if (i <= j) {
+          [array[i], array[j]] = [array[j], array[i]]; //swap two elements
+          i++;
+          j--;
+      }
+  }
+  return i;
+}
+
+function sortTable(sortType) {
+  if (sorted[sortType] === 0) {
+      ['cnt', 'id', 'score', 'difficulty', 'postedBy_name', 'author', 'source'].filter((val) => {return val !== sortType}).forEach(type => {
+          sorted[type] = 0;
+      });
+
+      sorted[sortType] = 1;
+  }
+  else {
+      sorted[sortType] *= -1;
+  }
+
+  quickSort(problems, 0, problems.length - 1, sortType);
+  
+  if (sorted[sortType] === -1) {
+      problems.reverse();
+  }
+
+  updateTable();
+}
+
 
 
 function updateTable() {
