@@ -12,15 +12,15 @@
 - [x] Add HTML fixture tests for common pbinfo card layouts
 
 ## Medium priority
-- [ ] Add UI controls to filter by status and score threshold
-- [ ] Add option to export results as CSV/JSON
-- [ ] Improve progress reporting (ETA, pages scanned, problems scanned)
+- [x] Add UI controls to filter by status and score threshold
+- [x] Add option to export results as CSV/JSON
+- [x] Improve progress reporting (ETA, pages scanned, problems scanned)
 - [x] Replace O(n²) duplicate checks with a `Set` of IDs
-- [ ] Add support for both global list and category list URLs with auto-detection
-- [ ] Add configurable page size / pagination strategy (in case pbinfo changes)
-- [ ] Add optional concurrency (limited) for faster scanning
-- [ ] Add a bookmarklet-friendly build (minified single line + instructions)
-- [ ] Add ESLint + formatting to keep style consistent
+- [x] Add support for both global list and category list URLs with auto-detection
+- [x] Add configurable page size / pagination strategy (in case pbinfo changes)
+- [x] Add optional concurrency (limited) for faster scanning
+- [x] Add a bookmarklet-friendly build (minified single line + instructions)
+- [x] Add ESLint + formatting to keep style consistent
 
 ## Low priority
 - [ ] Add a “copy links to clipboard” button

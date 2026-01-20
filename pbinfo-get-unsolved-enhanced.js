@@ -155,6 +155,78 @@ function parseTotalProblems(html) {
     return Number.isFinite(n) ? n : null;
 }
 
+function normalizeListUrl(inputUrl, baseUrl, paginationParam = 'start') {
+    const raw = normalizeSpace(inputUrl);
+    const base = normalizeSpace(baseUrl);
+    if (!raw && !base) return null;
+    let u;
+    try {
+        u = new URL(raw || base, base || undefined);
+    } catch {
+        return null;
+    }
+    u.searchParams.delete(paginationParam);
+    return u.toString();
+}
+
+function buildPageUrl(
+    baseUrl,
+    { pageIndex, pageSize, mode = 'offset', param = 'start', pageBase = 1 }
+) {
+    if (!baseUrl) return null;
+    const u = new URL(baseUrl);
+    if (mode === 'page') {
+        const base = Number.isFinite(pageBase) ? pageBase : 1;
+        u.searchParams.set(param, String(base + (pageIndex - 1)));
+        return u.toString();
+    }
+    const size = Number.isFinite(pageSize) ? pageSize : 10;
+    u.searchParams.set(param, String(size * (pageIndex - 1)));
+    return u.toString();
+}
+
+function csvEscape(value) {
+    if (value == null) return '';
+    const s = String(value);
+    const needsQuotes = /[",\n]/.test(s);
+    const escaped = s.replace(/"/g, '""');
+    return needsQuotes ? `"${escaped}"` : escaped;
+}
+
+function problemsToCsv(problems) {
+    const headers = [
+        'id',
+        'name',
+        'status',
+        'userScore',
+        'maxScore',
+        'difficulty',
+        'postedBy',
+        'author',
+        'source',
+        'link',
+    ];
+    const rows = Array.isArray(problems)
+        ? problems.map(p => ({
+            id: p.id,
+            name: p.name,
+            status: p.status,
+            userScore: p.userScore,
+            maxScore: p.maxScore,
+            difficulty: p.difficulty,
+            postedBy: p.postedBy_name,
+            author: p.author,
+            source: p.source,
+            link: p.link,
+        }))
+        : [];
+    const lines = [headers.join(',')].concat(
+        rows.map(r => headers.map(h => csvEscape(r[h])).join(','))
+    );
+    // Add UTF-8 BOM so Excel keeps diacritics.
+    return `\ufeff${lines.join('\n')}`;
+}
+
 if (typeof window === 'undefined' || typeof document === 'undefined') {
     if (typeof module !== 'undefined') {
         module.exports = {
@@ -167,6 +239,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             extractScoreInfoFromCard,
             classifyProblemStatus,
             parseTotalProblems,
+            normalizeListUrl,
+            buildPageUrl,
+            problemsToCsv,
         };
     }
 } else {
@@ -178,15 +253,65 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     window.console = iFrame.contentWindow.console;
     console.clear();
 
-    // prompt for link
-    let pageLink = prompt('Pune un link către lista de probleme de unde vrei să obții problemele nerezolvate.\n' +
-        'Mergi la o clasă/categorie sau la pagina generală a problemelor și copiază link-ul aici.');
-    if (!pageLink) {
+    const config = {
+        pagination: {
+            mode: window.PBINFO_GET_UNSOLVED_PAGINATION_MODE || 'offset',
+            param: window.PBINFO_GET_UNSOLVED_PAGE_PARAM || 'start',
+            pageBase: Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_PAGE_BASE))
+                ? Number(window.PBINFO_GET_UNSOLVED_PAGE_BASE)
+                : 1,
+        },
+        pageSize: Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_PAGE_SIZE))
+            ? Number(window.PBINFO_GET_UNSOLVED_PAGE_SIZE)
+            : null,
+        concurrency: Math.max(
+            1,
+            Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_CONCURRENCY))
+                ? Number(window.PBINFO_GET_UNSOLVED_CONCURRENCY)
+                : 1
+        ),
+        delayMs: Math.max(
+            0,
+            Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_DELAY_MS))
+                ? Number(window.PBINFO_GET_UNSOLVED_DELAY_MS)
+                : 0
+        ),
+        timeoutMs: Math.max(
+            1000,
+            Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_TIMEOUT_MS))
+                ? Number(window.PBINFO_GET_UNSOLVED_TIMEOUT_MS)
+                : 30000
+        ),
+        maxRetriesPerPage: Math.max(
+            0,
+            Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_MAX_RETRIES))
+                ? Number(window.PBINFO_GET_UNSOLVED_MAX_RETRIES)
+                : 3
+        ),
+        maxPages: Math.max(
+            1,
+            Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_MAX_PAGES))
+                ? Number(window.PBINFO_GET_UNSOLVED_MAX_PAGES)
+                : 5000
+        ),
+    };
+
+    const defaultLink = location?.href || '';
+    let pageLinkInput = prompt(
+        'Pune un link către lista de probleme de unde vrei să obții problemele nerezolvate.\n' +
+            'Enter = pagina curentă. Dacă folosești filtre, copiază link-ul din bara de adrese.',
+        defaultLink
+    );
+    if (pageLinkInput === null) {
         console.warn('Nu a fost furnizat niciun link. Scriptul a fost oprit.');
         return;
     }
-    // strip existing start parameter
-    pageLink = pageLink.replace(/([?&])start=\d+/g, '');
+    pageLinkInput = normalizeSpace(pageLinkInput);
+    const pageLink = normalizeListUrl(pageLinkInput || defaultLink, defaultLink, config.pagination.param);
+    if (!pageLink) {
+        console.warn('Link invalid. Scriptul a fost oprit.');
+        return;
+    }
 
     // wipe the page and setup UI
     document.head.innerHTML = '';
@@ -198,7 +323,21 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     document.body.appendChild(title);
 
     const style = document.createElement('style');
-    style.innerHTML = `a:hover{cursor:pointer;} td{border:1px solid black;}`;
+    style.innerHTML = `
+        :root { font-family: Arial, sans-serif; }
+        a:hover{cursor:pointer;}
+        td{border:1px solid black;padding:0.25em 0.4em;vertical-align:top;}
+        table{border-collapse:collapse;}
+        #controls{margin:0.75em 0 0.5em;display:flex;flex-wrap:wrap;gap:0.75em;align-items:flex-end;}
+        #controls .group{display:flex;flex-direction:column;gap:0.25em;min-width:12em;}
+        #controls label{display:flex;gap:0.4em;align-items:center;user-select:none;}
+        #controls input[type="number"]{width:8em;}
+        #controls button{padding:0.3em 0.6em;}
+        #progress{margin:0.4em 0 0.2em;color:#444;}
+        #summary{margin:0.5em 0;color:#333;}
+        .pill{display:inline-block;padding:0.1em 0.4em;border-radius:0.4em;color:white;}
+        .muted{color:#666;}
+    `;
     document.head.appendChild(style);
 
     const logDiv = document.createElement('div');
@@ -217,7 +356,23 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     addLog('Link către lista de probleme: <a href="' + pageLink + '"><i>' + pageLink + '</i></a>');
 
-    const pageSize = 10;
+    const progressDiv = document.createElement('div');
+    progressDiv.id = 'progress';
+    document.body.appendChild(progressDiv);
+
+    const controlsDiv = document.createElement('div');
+    controlsDiv.id = 'controls';
+    document.body.appendChild(controlsDiv);
+
+    const summaryDiv = document.createElement('div');
+    summaryDiv.id = 'summary';
+    document.body.appendChild(summaryDiv);
+
+    let pageSize = config.pageSize;
+    let totalProblems = null;
+    let totalPages = null;
+    const startedAt = Date.now();
+
     const stats = { solved: 0, tried: 0, unattempted: 0, total: 0, pages: 0 };
     let finished = false;
 
@@ -282,13 +437,20 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         }
     }
 
-    const reqPageEl = document.createElement('div');
-    reqPageEl.style.display = 'none';
-    document.body.appendChild(reqPageEl);
-
-    const problems = [];
+    const allProblems = [];
     const seenProblemIds = new Set();
     const sorted = { cnt: 1, id: 0, score: 0, status: 0, difficulty: 0, postedBy_name: 0, author: 0, source: 0 };
+
+    const filterState = {
+        statuses: new Set(['tried', 'unattempted']),
+        includeUnknownScore: true,
+        scoreMin: null,
+        scoreMax: null,
+    };
+
+    const listDiv = document.createElement('div');
+    listDiv.style.marginTop = '1em';
+
     const table = document.createElement('table');
     table.style.width = '75%';
     table.style.minWidth = '450px';
@@ -326,12 +488,215 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         } else {
             sorted[type] *= -1;
         }
-        quickSort(problems, 0, problems.length - 1, type);
-        if (sorted[type] === -1) problems.reverse();
-        updateTable();
+        quickSort(allProblems, 0, allProblems.length - 1, type);
+        if (sorted[type] === -1) allProblems.reverse();
+        renderResults();
     }
 
-    function updateTable() {
+    window.sortTable = sortTable;
+
+    function getVisibleProblems() {
+        const min = Number.isFinite(filterState.scoreMin) ? filterState.scoreMin : null;
+        const max = Number.isFinite(filterState.scoreMax) ? filterState.scoreMax : null;
+        const includeUnknown = Boolean(filterState.includeUnknownScore);
+        const statuses = filterState.statuses;
+
+        return allProblems.filter(p => {
+            if (!statuses.has(p.status)) return false;
+            const scoreKnown = p.userScore != null && Number.isFinite(p.userScore);
+            if (!scoreKnown) return includeUnknown;
+            if (min != null && p.userScore < min) return false;
+            if (max != null && p.userScore > max) return false;
+            return true;
+        });
+    }
+
+    function updateSummary(visible) {
+        const shown = visible.length;
+        const total = allProblems.length;
+        const unsolved = allProblems.filter(p => p.status !== 'solved').length;
+        summaryDiv.innerHTML = `<b>Statistici:</b> scanate=${total} · nerezolvate=${unsolved} · afișate=${shown} · pagini=${stats.pages}`;
+    }
+
+    function updateList(visible) {
+        const tried = visible.filter(p => p.status === 'tried');
+        const unattempted = visible.filter(p => p.status === 'unattempted');
+        const solved = visible.filter(p => p.status === 'solved');
+
+        function mkList(items) {
+            if (items.length === 0) return '<span class="muted">-</span>';
+            return `<ul style="list-style:none;padding-left:0;margin:0;">${items
+                .map(p => `<li style="margin:0.15em 0;"><a href="${p.link}" target="_blank">#${p.id} - ${p.name}</a></li>`)
+                .join('')}</ul>`;
+        }
+
+        listDiv.innerHTML = `<h3>Lista (filtrată):</h3>
+            <div style="margin-bottom:0.5em;">
+                Încercate: <b>${tried.length}</b> · Neîncercate: <b>${unattempted.length}</b> · Rezolvate: <b>${solved.length}</b>
+            </div>
+            <h4 style="margin:0.75em 0 0.25em;">Încercate</h4>
+            ${mkList(tried)}
+            <h4 style="margin:0.75em 0 0.25em;">Neîncercate</h4>
+            ${mkList(unattempted)}
+            <h4 style="margin:0.75em 0 0.25em;">Rezolvate</h4>
+            ${mkList(solved)}`;
+    }
+
+    function renderResults() {
+        const visible = getVisibleProblems();
+        updateTable(visible);
+        updateSummary(visible);
+        updateList(visible);
+    }
+
+    function downloadText(filename, content, mime) {
+        const blob = new Blob([content], { type: mime || 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function setupControls() {
+        const groupStatus = document.createElement('div');
+        groupStatus.className = 'group';
+        groupStatus.innerHTML = '<b>Stare</b>';
+
+        const statuses = [
+            { key: 'solved', label: 'rezolvate' },
+            { key: 'tried', label: 'încercate' },
+            { key: 'unattempted', label: 'neîncercate' },
+        ];
+
+        for (const s of statuses) {
+            const label = document.createElement('label');
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = filterState.statuses.has(s.key);
+            input.addEventListener('change', () => {
+                if (input.checked) filterState.statuses.add(s.key);
+                else filterState.statuses.delete(s.key);
+                renderResults();
+            });
+            label.appendChild(input);
+            label.appendChild(document.createTextNode(` ${s.label}`));
+            groupStatus.appendChild(label);
+        }
+
+        const groupScore = document.createElement('div');
+        groupScore.className = 'group';
+        groupScore.innerHTML = '<b>Filtru punctaj</b>';
+
+        const minLabel = document.createElement('label');
+        minLabel.textContent = 'Min';
+        const minInput = document.createElement('input');
+        minInput.type = 'number';
+        minInput.min = '0';
+        minInput.placeholder = '-';
+        minInput.addEventListener('input', () => {
+            const v = Number(minInput.value);
+            filterState.scoreMin = Number.isFinite(v) && minInput.value !== '' ? v : null;
+            renderResults();
+        });
+        minLabel.appendChild(minInput);
+        groupScore.appendChild(minLabel);
+
+        const maxLabel = document.createElement('label');
+        maxLabel.textContent = 'Max';
+        const maxInput = document.createElement('input');
+        maxInput.type = 'number';
+        maxInput.min = '0';
+        maxInput.placeholder = '-';
+        maxInput.addEventListener('input', () => {
+            const v = Number(maxInput.value);
+            filterState.scoreMax = Number.isFinite(v) && maxInput.value !== '' ? v : null;
+            renderResults();
+        });
+        maxLabel.appendChild(maxInput);
+        groupScore.appendChild(maxLabel);
+
+        const unknownLabel = document.createElement('label');
+        const unknownInput = document.createElement('input');
+        unknownInput.type = 'checkbox';
+        unknownInput.checked = filterState.includeUnknownScore;
+        unknownInput.addEventListener('change', () => {
+            filterState.includeUnknownScore = unknownInput.checked;
+            renderResults();
+        });
+        unknownLabel.appendChild(unknownInput);
+        unknownLabel.appendChild(document.createTextNode(' include scor necunoscut'));
+        groupScore.appendChild(unknownLabel);
+
+        const groupExport = document.createElement('div');
+        groupExport.className = 'group';
+        groupExport.innerHTML = '<b>Export</b>';
+
+        const exportCsv = document.createElement('button');
+        exportCsv.textContent = 'CSV (filtrat)';
+        exportCsv.addEventListener('click', () => {
+            const visible = getVisibleProblems();
+            downloadText('pbinfo-problems.csv', problemsToCsv(visible), 'text/csv;charset=utf-8');
+        });
+        groupExport.appendChild(exportCsv);
+
+        const exportJson = document.createElement('button');
+        exportJson.textContent = 'JSON (filtrat)';
+        exportJson.addEventListener('click', () => {
+            const visible = getVisibleProblems();
+            const data = visible.map(p => ({
+                id: p.id,
+                name: p.name,
+                link: p.link,
+                status: p.status,
+                userScore: p.userScore,
+                maxScore: p.maxScore,
+                difficulty: p.difficulty,
+                postedBy_name: p.postedBy_name,
+                postedBy_link: p.postedBy_link,
+                author: p.author,
+                source: p.source,
+            }));
+            downloadText('pbinfo-problems.json', JSON.stringify(data, null, 2), 'application/json;charset=utf-8');
+        });
+        groupExport.appendChild(exportJson);
+
+        controlsDiv.replaceChildren(groupStatus, groupScore, groupExport);
+    }
+
+    function formatDuration(ms) {
+        const s = Math.max(0, Math.floor(ms / 1000));
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const ss = s % 60;
+        if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m ${String(ss).padStart(2, '0')}s`;
+        if (m > 0) return `${m}m ${String(ss).padStart(2, '0')}s`;
+        return `${ss}s`;
+    }
+
+    function updateProgress(inFlight) {
+        const elapsedMs = Date.now() - startedAt;
+        const pagesDone = stats.pages;
+        const pagesText = Number.isFinite(totalPages) ? `${pagesDone}/${totalPages}` : `${pagesDone}`;
+        const probsText = Number.isFinite(totalProblems) ? `${stats.total}/${totalProblems}` : `${stats.total}`;
+        const speed = elapsedMs > 0 ? pagesDone / (elapsedMs / 1000) : 0;
+        const etaMs =
+            Number.isFinite(totalPages) && speed > 0 ? ((totalPages - pagesDone) / speed) * 1000 : null;
+        const etaText = etaMs != null ? ` · ETA ~${formatDuration(etaMs)}` : '';
+        const inflightText = inFlight > 0 ? ` · în lucru ${inFlight}` : '';
+        progressDiv.textContent = `Progres: pagini ${pagesText}, probleme ${probsText} · timp ${formatDuration(
+            elapsedMs
+        )}${etaText}${inflightText}`;
+    }
+
+    setupControls();
+    renderResults();
+    updateProgress(0);
+
+    function updateTable(visibleProblems) {
         function sortSymbol(t) {
             if (sorted[t] === 1) return '&#9660;';
             if (sorted[t] === -1) return '&#9650;';
@@ -363,14 +728,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             <td style="min-width:10em;user-select:none;"><a onclick="sortTable('author')">Autor ${sortSymbol('author')}</a></td>
             <td style="min-width:10em;user-select:none;"><a onclick="sortTable('source')">Sursa problemei ${sortSymbol('source')}</a></td>
         </tr>`;
-        problems.forEach(p => {
+        const list = Array.isArray(visibleProblems) ? visibleProblems : getVisibleProblems();
+        list.forEach((p, i) => {
             const row = document.createElement('tr');
-            row.innerHTML = `<td>${p.cnt}.</td>
+            row.innerHTML = `<td>${i + 1}.</td>
                 <td><a href="${p.link}" target="_blank">#${p.id} - ${p.name}</a></td>
-                <td>${p.scoreKnown ? `${p.score}p` : '-'}</td>
-                <td><span style="color:white;background-color:#${statusColor(p.status)};">${statusLabel(p.status)}</span></td>
-                <td><span style="color:white;background-color:#${difficultyColor(p.difficulty)};">${numberToDifficulty(p.difficulty)}</span></td>
-                <td><a target="_blank" href="${p.postedBy_link}"><img style="vertical-align:middle;width:1.1em;" src="${p.postedBy_img}"> ${p.postedBy_name}</a></td>
+                <td>${p.userScore != null && Number.isFinite(p.userScore) ? `${p.userScore}p` : '-'}</td>
+                <td><span class="pill" style="background-color:#${statusColor(p.status)};">${statusLabel(p.status)}</span></td>
+                <td><span class="pill" style="background-color:#${difficultyColor(p.difficulty)};">${numberToDifficulty(p.difficulty)}</span></td>
+                <td>${p.postedBy_link ? `<a target="_blank" href="${p.postedBy_link}"><img style="vertical-align:middle;width:1.1em;" src="${p.postedBy_img}"> ${p.postedBy_name}</a>` : ''}</td>
                 <td>${p.author}</td>
                 <td>${p.source}</td>`;
             table.appendChild(row);
@@ -381,49 +747,16 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         if (finished) return;
         finished = true;
 
-        updateTable();
         document.body.appendChild(table);
-
-        const tried = problems.filter(p => p.status === 'tried');
-        const unattempted = problems.filter(p => p.status === 'unattempted');
-
-        const listDiv = document.createElement('div');
-        listDiv.style.marginTop = '1em';
-        listDiv.innerHTML = `<h3>Lista problemelor nerezolvate:</h3>
-            <div style="margin-bottom:0.5em;">
-                Încercate: <b>${tried.length}</b> · Neîncercate: <b>${unattempted.length}</b>
-            </div>`;
-
-        function appendList(titleText, items) {
-            if (items.length === 0) return;
-            const h = document.createElement('h4');
-            h.textContent = titleText;
-            h.style.margin = '0.75em 0 0.25em';
-            const ul = document.createElement('ul');
-            ul.style.listStyle = 'none';
-            ul.style.paddingLeft = '0';
-            items.forEach(p => {
-                const li = document.createElement('li');
-                li.style.marginBottom = '0.25em';
-                li.innerHTML = `<a href="${p.link}" target="_blank">#${p.id} - ${p.name}</a>`;
-                ul.appendChild(li);
-            });
-            listDiv.appendChild(h);
-            listDiv.appendChild(ul);
-        }
-
-        appendList('Încercate (punctaj < maxim)', tried);
-        appendList('Neîncercate (punctaj indisponibil)', unattempted);
-
-        if (tried.length + unattempted.length > 0) {
-            document.body.appendChild(listDiv);
-        }
+        document.body.appendChild(listDiv);
+        renderResults();
 
         const summary = `Rezumat: ${stats.solved} rezolvate, ${stats.tried} încercate, ${stats.unattempted} neîncercate (total ${stats.total}, pagini ${stats.pages}).`;
         addLog(summary);
 
+        const unsolvedCount = allProblems.filter(p => p.status !== 'solved').length;
         if (complete) {
-            addLog(`<u>Am terminat de extras problemele.</u> Sunt ${problems.length} probleme nerezolvate. Tabelul și lista au fost adăugate mai jos.`);
+            addLog(`<u>Am terminat de extras problemele.</u> Sunt ${unsolvedCount} probleme nerezolvate. Tabelul și lista au fost adăugate mai jos.`);
             return;
         }
 
@@ -431,24 +764,77 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         addLog(`<span style="color:#b30000;"><u>Scanarea s-a oprit înainte de final.</u></span>${reasonText}`);
     }
 
-    // Fetch pages recursively
-    const maxRetriesPerPage = 3;
-    (function fetchPage(pageIndex, retryCount = 0) {
+    // Fetch pages (optional concurrency)
+    const maxRetriesPerPage = config.maxRetriesPerPage;
+    const pageQueue = [];
+    let queueInitialized = false;
+    let inFlight = 0;
+
+    function schedule(fn) {
+        if (config.delayMs > 0) setTimeout(fn, config.delayMs);
+        else fn();
+    }
+
+    function maybeFinish() {
         if (finished) return;
+        if (queueInitialized && pageQueue.length === 0 && inFlight === 0) {
+            finishScan({ complete: true });
+        }
+    }
+
+    function fetchNext() {
+        if (finished) return;
+        const next = pageQueue.shift();
+        if (next == null) {
+            maybeFinish();
+            return;
+        }
+        fetchPage(next, 0);
+    }
+
+    function initQueueFromTotalPages() {
+        if (queueInitialized) return;
+        if (!Number.isFinite(totalPages)) return;
+        for (let i = 2; i <= totalPages; i++) pageQueue.push(i);
+        queueInitialized = true;
+        const extraWorkers = Math.max(0, Math.min(config.concurrency, totalPages) - 1);
+        for (let i = 0; i < extraWorkers; i++) fetchNext();
+    }
+
+    function fetchPage(pageIndex, retryCount = 0) {
+        if (finished) return;
+        inFlight++;
+        updateProgress(inFlight);
         const xhr = new XMLHttpRequest();
-        const startOffset = pageSize * (pageIndex - 1);
-        const url = pageLink + (pageLink.includes('?') ? '&' : '?') + 'start=' + startOffset;
+        let finalized = false;
+        const finalize = () => {
+            if (finalized) return;
+            finalized = true;
+            inFlight = Math.max(0, inFlight - 1);
+            updateProgress(inFlight);
+        };
+        const effectivePageSize = Number.isFinite(pageSize) ? pageSize : 10;
+        const startOffset = effectivePageSize * (pageIndex - 1);
+        const url = buildPageUrl(pageLink, {
+            pageIndex,
+            pageSize: effectivePageSize,
+            mode: config.pagination.mode,
+            param: config.pagination.param,
+            pageBase: config.pagination.pageBase,
+        });
         xhr.open('GET', url);
-        xhr.timeout = 30000;
+        xhr.timeout = config.timeoutMs;
         xhr.onload = () => {
             const responseText = xhr.responseText || xhr.response || '';
             if (xhr.status !== 200) {
                 if (retryCount < maxRetriesPerPage) {
                     const delay = 1000 * (retryCount + 1);
                     addLog(`Eroare la pagina ${pageIndex} (status ${xhr.status}). Reîncerc în ${delay / 1000}s...`);
+                    finalize();
                     setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
                     return;
                 }
+                finalize();
                 finishScan({ complete: false, reason: `Eroare la pagina ${pageIndex} (status ${xhr.status})` });
                 return;
             }
@@ -457,34 +843,64 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                 if (retryCount < maxRetriesPerPage) {
                     const delay = 1000 * (retryCount + 1);
                     addLog(`Serverul a răspuns cu "Invalid request" la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
+                    finalize();
                     setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
                     return;
                 }
+                finalize();
                 finishScan({ complete: false, reason: `Serverul a răspuns cu "Invalid request" la pagina ${pageIndex}` });
                 return;
             }
 
-            reqPageEl.innerHTML = responseText;
-            const cards = reqPageEl.querySelectorAll('div.card.mb-3');
+            const pageEl = document.createElement('div');
+            pageEl.innerHTML = responseText;
+            const cards = pageEl.querySelectorAll('div.card.mb-3');
+
+            if (pageIndex === 1) {
+                if (pageSize == null && cards.length > 0) {
+                    pageSize = cards.length;
+                    addLog(`Page size detectată automat: ${pageSize}.`);
+                }
+                if (totalProblems == null) {
+                    const t = parseTotalProblems(responseText);
+                    if (Number.isFinite(t)) totalProblems = t;
+                }
+                if (Number.isFinite(totalProblems) && Number.isFinite(pageSize)) {
+                    totalPages = Math.ceil(totalProblems / pageSize);
+                }
+                updateProgress(inFlight);
+                if (!queueInitialized && Number.isFinite(totalPages)) {
+                    addLog(`Total detectat: ${totalProblems} probleme · ${totalPages} pagini · pageSize=${pageSize} · concurență=${config.concurrency}.`);
+                    initQueueFromTotalPages();
+                }
+            }
 
             if (cards.length === 0) {
-                const totalProblems = parseTotalProblems(responseText);
-                if (Number.isFinite(totalProblems) && startOffset >= totalProblems) {
+                const t = totalProblems ?? parseTotalProblems(responseText);
+                if (Number.isFinite(t) && startOffset >= t) {
+                    finalize();
+                    if (queueInitialized) {
+                        pageQueue.length = 0;
+                        maybeFinish();
+                        return;
+                    }
                     finishScan({ complete: true });
                     return;
                 }
                 if (retryCount < maxRetriesPerPage) {
                     const delay = 1000 * (retryCount + 1);
-                    const hint = Number.isFinite(totalProblems)
-                        ? `0 probleme, dar total=${totalProblems}`
+                    const hint = Number.isFinite(t)
+                        ? `0 probleme, dar total=${t}`
                         : '0 probleme';
                     addLog(`Pagina ${pageIndex} pare goală (${hint}). Reîncerc în ${delay / 1000}s...`);
+                    finalize();
                     setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
                     return;
                 }
-                const hint = Number.isFinite(totalProblems)
-                    ? `Pagina ${pageIndex} goală deși totalul este ${totalProblems}`
+                const hint = Number.isFinite(t)
+                    ? `Pagina ${pageIndex} goală deși totalul este ${t}`
                     : `Pagina ${pageIndex} goală`;
+                finalize();
                 finishScan({ complete: false, reason: hint });
                 return;
             }
@@ -535,7 +951,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                             const host = new URL(pbImg).hostname;
                             if (host === 'www.gravatar.com') pbImg = pbImg.replace(/&s=\d+/i, '&s=128');
                             else if (host === 'www.pbinfo.ro') pbImg = pbImg.replace(/&gsize=\d+/i, '&gsize=128');
-                        } catch (e) {}
+                        } catch {}
                     }
                 }
                 // author
@@ -562,25 +978,26 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                 }
                 stats.total++;
 
-                if (status !== 'solved') {
-                    const scoreKnown = scoreInfo.userScore != null && Number.isFinite(scoreInfo.userScore);
-                    const score = scoreKnown ? scoreInfo.userScore : 0;
-                    problems.push({
-                        cnt: problems.length + 1,
-                        id,
-                        name,
-                        link,
-                        difficulty,
-                        score,
-                        scoreKnown,
-                        status,
-                        postedBy_link: pbLink,
-                        postedBy_name: pbName,
-                        postedBy_img: pbImg,
-                        author,
-                        source,
-                    });
-                }
+                const scoreKnown = scoreInfo.userScore != null && Number.isFinite(scoreInfo.userScore);
+                const maxScore = Number.isFinite(scoreInfo.maxScore) ? scoreInfo.maxScore : 100;
+                const score = scoreKnown ? scoreInfo.userScore : -1;
+                allProblems.push({
+                    cnt: allProblems.length + 1,
+                    id,
+                    name,
+                    link,
+                    difficulty,
+                    score,
+                    scoreKnown,
+                    userScore: scoreInfo.userScore,
+                    maxScore,
+                    status,
+                    postedBy_link: pbLink,
+                    postedBy_name: pbName,
+                    postedBy_img: pbImg,
+                    author,
+                    source,
+                });
 
                 if (shouldDebugDump(id) && (scoreInfo.candidates.length === 0 || status === 'unattempted')) {
                     debugDumpCard(card, { id, name, link, scoreInfo });
@@ -595,9 +1012,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                 addLog(`<span style="color:#b35c00;"><b>Atenție:</b> nu pare să fie disponibil punctajul tău pe această listă. Verifică dacă ești autentificat pe pbinfo.ro.</span>`);
             }
 
-            fetchPage(pageIndex + 1, 0);
+            finalize();
+            if (queueInitialized) {
+                schedule(fetchNext);
+                return;
+            }
+            schedule(() => fetchPage(pageIndex + 1, 0));
         };
         xhr.ontimeout = () => {
+            finalize();
             if (retryCount < maxRetriesPerPage) {
                 const delay = 1000 * (retryCount + 1);
                 addLog(`Timeout la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
@@ -607,6 +1030,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             finishScan({ complete: false, reason: `Timeout la pagina ${pageIndex}` });
         };
         xhr.onerror = () => {
+            finalize();
             if (retryCount < maxRetriesPerPage) {
                 const delay = 1000 * (retryCount + 1);
                 addLog(`Eroare de rețea la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
@@ -616,6 +1040,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             finishScan({ complete: false, reason: `Eroare de rețea la pagina ${pageIndex}` });
         };
         xhr.send();
-    })(1, 0);
+    }
+
+    fetchPage(1, 0);
 })();
 }

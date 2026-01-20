@@ -9,9 +9,31 @@ Obține o listă cu problemele nerezolvate de la o categorie de probleme de pe p
 1. Intră pe pbinfo.ro și conectează-te la un cont (altfel nu ai punctajul tău pe probleme).
 2. Mergi la lista de probleme pe care vrei să o verifici (o categorie sau lista generală cu filtre).
 3. Deschide consola browser-ului (`Ctrl` + `Shift` + `J`) și rulează scriptul din `pbinfo-get-unsolved-enhanced.js`.
-4. La prompt, lipește link-ul din bara de adresă și confirmă.
+4. La prompt, apasă `Enter` pentru pagina curentă sau lipește link-ul din bara de adresă și confirmă.
 
 Scriptul va scana paginile din listă și va afișa un tabel + o listă cu problemele care nu sunt rezolvate cu punctaj maxim.
+
+După scanare:
+- Folosește controalele de filtrare (stare + punctaj) pentru a restrânge lista.
+- Folosește butoanele de export pentru a salva rezultatele în CSV/JSON.
+
+## Config (opțional)
+
+Poți seta câteva variabile înainte să rulezi scriptul:
+
+```js
+// performanță / rețea
+window.PBINFO_GET_UNSOLVED_CONCURRENCY = 3; // default 1
+window.PBINFO_GET_UNSOLVED_DELAY_MS = 150; // delay între request-uri (ms), default 0
+window.PBINFO_GET_UNSOLVED_TIMEOUT_MS = 30000; // default 30000
+window.PBINFO_GET_UNSOLVED_MAX_RETRIES = 3; // default 3
+
+// paginare (în caz că pbinfo schimbă parametrii)
+window.PBINFO_GET_UNSOLVED_PAGE_SIZE = 10; // default auto
+window.PBINFO_GET_UNSOLVED_PAGINATION_MODE = "offset"; // "offset" | "page"
+window.PBINFO_GET_UNSOLVED_PAGE_PARAM = "start"; // default "start"
+window.PBINFO_GET_UNSOLVED_PAGE_BASE = 1; // doar pentru mode="page"
+```
 
 ## Debug
 
@@ -29,6 +51,17 @@ window.PBINFO_GET_UNSOLVED_DEBUG_HTML = false;
 
 Apoi rulează din nou `pbinfo-get-unsolved-enhanced.js`. Vei primi dump-uri cu ce “vede” parser-ul pentru cardurile respective.
 
+## Bookmarklet (opțional)
+
+Poți genera un bookmarklet minificat:
+
+```bash
+npm install
+npm run build:bookmarklet
+```
+
+Rezultatul este scris în `dist/pbinfo-get-unsolved.bookmarklet.txt`. Copiază conținutul în URL-ul unui bookmark nou, apoi rulează-l pe o pagină pbinfo.
+
 ## Development
 
 Rulează testele local:
@@ -36,6 +69,13 @@ Rulează testele local:
 ```bash
 npm install
 npm test
+```
+
+Lint + format:
+
+```bash
+npm run lint
+npm run format
 ```
 
 ## Issues / sugestii
