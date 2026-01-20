@@ -26,28 +26,40 @@ function parseCard(html) {
 test('fixture: title tooltip score -> tried', () => {
   const card = parseCard(loadFixture('card-score-title.html'));
   const info = extractScoreInfoFromCard(card);
-  assert.deepEqual({ userScore: info.userScore, maxScore: info.maxScore }, { userScore: 0, maxScore: 100 });
+  assert.deepEqual(
+    { userScore: info.userScore, maxScore: info.maxScore },
+    { userScore: 0, maxScore: 100 }
+  );
   assert.equal(classifyProblemStatus(info), 'tried');
 });
 
 test('fixture: data-bs-title tooltip score -> tried', () => {
   const card = parseCard(loadFixture('card-score-data-bs-title.html'));
   const info = extractScoreInfoFromCard(card);
-  assert.deepEqual({ userScore: info.userScore, maxScore: info.maxScore }, { userScore: 65, maxScore: 100 });
+  assert.deepEqual(
+    { userScore: info.userScore, maxScore: info.maxScore },
+    { userScore: 65, maxScore: 100 }
+  );
   assert.equal(classifyProblemStatus(info), 'tried');
 });
 
 test('fixture: ratio score -> tried', () => {
   const card = parseCard(loadFixture('card-score-ratio.html'));
   const info = extractScoreInfoFromCard(card);
-  assert.deepEqual({ userScore: info.userScore, maxScore: info.maxScore }, { userScore: 30, maxScore: 100 });
+  assert.deepEqual(
+    { userScore: info.userScore, maxScore: info.maxScore },
+    { userScore: 30, maxScore: 100 }
+  );
   assert.equal(classifyProblemStatus(info), 'tried');
 });
 
 test('fixture: ambiguous 100p -> unattempted', () => {
   const card = parseCard(loadFixture('card-score-ambiguous-100.html'));
   const info = extractScoreInfoFromCard(card);
-  assert.deepEqual({ userScore: info.userScore, maxScore: info.maxScore }, { userScore: null, maxScore: 100 });
+  assert.deepEqual(
+    { userScore: info.userScore, maxScore: info.maxScore },
+    { userScore: null, maxScore: 100 }
+  );
   assert.equal(classifyProblemStatus(info), 'unattempted');
 });
 

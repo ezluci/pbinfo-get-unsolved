@@ -17,7 +17,14 @@ test('parseScoreText: points', () => {
 
 test('selectScoreFromCandidates: max only => unknown user score', () => {
   const res = selectScoreFromCandidates([
-    { tooltip: 'Punctaj maxim', text: '100p', value: 100, max: null, hasRatio: false, isLink: false },
+    {
+      tooltip: 'Punctaj maxim',
+      text: '100p',
+      value: 100,
+      max: null,
+      hasRatio: false,
+      isLink: false,
+    },
   ]);
   assert.deepEqual(res, { userScore: null, maxScore: 100 });
 });
@@ -31,7 +38,14 @@ test('selectScoreFromCandidates: single ambiguous 100p => treat as max', () => {
 
 test('selectScoreFromCandidates: prefer obtained over max', () => {
   const res = selectScoreFromCandidates([
-    { tooltip: 'Punctaj maxim', text: '100p', value: 100, max: null, hasRatio: false, isLink: false },
+    {
+      tooltip: 'Punctaj maxim',
+      text: '100p',
+      value: 100,
+      max: null,
+      hasRatio: false,
+      isLink: false,
+    },
     { tooltip: 'Punctaj obținut', text: '0p', value: 0, max: null, hasRatio: false, isLink: false },
   ]);
   assert.deepEqual(res, { userScore: 0, maxScore: 100 });
@@ -39,7 +53,14 @@ test('selectScoreFromCandidates: prefer obtained over max', () => {
 
 test('selectScoreFromCandidates: ratio provides max', () => {
   const res = selectScoreFromCandidates([
-    { tooltip: 'Punctaj obținut', text: '30/100', value: 30, max: 100, hasRatio: true, isLink: false },
+    {
+      tooltip: 'Punctaj obținut',
+      text: '30/100',
+      value: 30,
+      max: 100,
+      hasRatio: true,
+      isLink: false,
+    },
   ]);
   assert.deepEqual(res, { userScore: 30, maxScore: 100 });
 });

@@ -53,7 +53,11 @@ test('problemsToCsv: escapes values and includes BOM', () => {
       link: 'https://www.pbinfo.ro/probleme/1/a',
     },
   ]);
-  assert.ok(csv.startsWith('\ufeffid,name,status,userScore,maxScore,difficulty,postedBy,author,source,link\n'));
+  assert.ok(
+    csv.startsWith(
+      '\ufeffid,name,status,userScore,maxScore,difficulty,postedBy,author,source,link\n'
+    )
+  );
   assert.ok(csv.includes('"A ""quote"""'));
   assert.ok(csv.includes('"Sursă, cu virgulă"'));
 });
