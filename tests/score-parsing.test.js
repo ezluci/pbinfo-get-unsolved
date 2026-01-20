@@ -22,6 +22,13 @@ test('selectScoreFromCandidates: max only => unknown user score', () => {
   assert.deepEqual(res, { userScore: null, maxScore: 100 });
 });
 
+test('selectScoreFromCandidates: single ambiguous 100p => treat as max', () => {
+  const res = selectScoreFromCandidates([
+    { tooltip: 'Punctaj', text: '100p', value: 100, max: null, hasRatio: false, isLink: false },
+  ]);
+  assert.deepEqual(res, { userScore: null, maxScore: 100 });
+});
+
 test('selectScoreFromCandidates: prefer obtained over max', () => {
   const res = selectScoreFromCandidates([
     { tooltip: 'Punctaj maxim', text: '100p', value: 100, max: null, hasRatio: false, isLink: false },

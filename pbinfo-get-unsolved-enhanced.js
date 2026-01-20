@@ -66,6 +66,15 @@ function selectScoreFromCandidates(candidates) {
         return { userScore: null, maxScore };
     }
 
+    // Heuristic:
+    // When pbinfo can't (or doesn't) show the user's score, it may still show the maximum points
+    // as a generic "Punctaj 100p". If that's the only score-like value we see and it's not
+    // explicitly "obtinut" (or a ratio like 0/100), treat it as max points, not as a solved score.
+    const looksLikeUserScore = isUserCand(best) || best.hasRatio;
+    if (!looksLikeUserScore && candidates.length === 1 && best.value === 100 && maxScore == null) {
+        return { userScore: null, maxScore: 100 };
+    }
+
     if (best.max != null && Number.isFinite(best.max)) maxScore = best.max;
     return { userScore: best.value, maxScore };
 }
@@ -384,6 +393,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             } else {
                 const unknownSuffix = unknownScoreCount > 0 ? ` (punctaj indisponibil pentru ${unknownScoreCount})` : '';
                 addLog(`Pagina ${pageIndex} are ${solvedCount}/${totalCount} probleme rezolvate.${unknownSuffix}`);
+                if (pageIndex === 1 && totalCount > 0 && unknownScoreCount === totalCount) {
+                    addLog(`<span style="color:#b35c00;"><b>Atenție:</b> nu pare să fie disponibil punctajul tău pe această listă. Verifică dacă ești autentificat pe pbinfo.ro.</span>`);
+                }
                 fetchPage(pageIndex + 1, 0);
             }
         };
