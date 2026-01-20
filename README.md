@@ -42,6 +42,8 @@ window.PBINFO_GET_UNSOLVED_PAGE_PARAM = 'start'; // default "start"
 window.PBINFO_GET_UNSOLVED_PAGE_BASE = 1; // doar pentru mode="page"
 ```
 
+Notă: dacă folosești `START_PAGE > 1` în modul `offset` și lista ta are un `PAGE_SIZE` diferit de 10, setează explicit `PBINFO_GET_UNSOLVED_PAGE_SIZE` ca să nu sară pagini.
+
 ## Debug
 
 Dacă scriptul ratează probleme sau nu reușește să identifice punctajul, poți activa un mod de debug (log în consolă).

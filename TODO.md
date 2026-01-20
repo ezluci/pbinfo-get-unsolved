@@ -8,6 +8,7 @@
 - [x] Add request retry/backoff on transient failures and rate limiting
 - [x] Add safer termination conditions (avoid premature stop on empty/blocked pages)
 - [x] Add debug mode to dump per-card metadata when parsing fails
+- [x] Harden report rendering (avoid `innerHTML` for pbinfo strings)
 - [x] Update README to reference `pbinfo-get-unsolved-enhanced.js` and current workflow
 - [x] Add regression tests for score parsing heuristics
 - [x] Add HTML fixture tests for common pbinfo card layouts

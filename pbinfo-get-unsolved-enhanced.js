@@ -677,7 +677,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       const shown = visible.length;
       const total = allProblems.length;
       const unsolved = allProblems.filter((p) => p.status !== 'solved').length;
-      summaryDiv.innerHTML = `<b>Statistici:</b> scanate=${total} · nerezolvate=${unsolved} · afișate=${shown} · pagini=${stats.pages}`;
+      summaryDiv.replaceChildren();
+      const b = document.createElement('b');
+      b.textContent = 'Statistici:';
+      summaryDiv.appendChild(b);
+      summaryDiv.appendChild(
+        document.createTextNode(
+          ` scanate=${total} · nerezolvate=${unsolved} · afișate=${shown} · pagini=${stats.pages}`
+        )
+      );
     }
 
     function updateList(visible) {
@@ -686,25 +694,65 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       const solved = visible.filter((p) => p.status === 'solved');
 
       function mkList(items) {
-        if (items.length === 0) return '<span class="muted">-</span>';
-        return `<ul style="list-style:none;padding-left:0;margin:0;">${items
-          .map(
-            (p) =>
-              `<li style="margin:0.15em 0;"><a href="${p.link}" target="_blank">#${p.id} - ${p.name}</a></li>`
-          )
-          .join('')}</ul>`;
+        if (items.length === 0) {
+          const muted = document.createElement('span');
+          muted.className = 'muted';
+          muted.textContent = '-';
+          return muted;
+        }
+
+        const ul = document.createElement('ul');
+        ul.style.listStyle = 'none';
+        ul.style.paddingLeft = '0';
+        ul.style.margin = '0';
+        for (const p of items) {
+          const li = document.createElement('li');
+          li.style.margin = '0.15em 0';
+          const a = document.createElement('a');
+          a.href = p.link;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          a.textContent = `#${p.id} - ${p.name}`;
+          li.appendChild(a);
+          ul.appendChild(li);
+        }
+        return ul;
       }
 
-      listDiv.innerHTML = `<h3>Lista (filtrată):</h3>
-            <div style="margin-bottom:0.5em;">
-                Încercate: <b>${tried.length}</b> · Neîncercate: <b>${unattempted.length}</b> · Rezolvate: <b>${solved.length}</b>
-            </div>
-            <h4 style="margin:0.75em 0 0.25em;">Încercate</h4>
-            ${mkList(tried)}
-            <h4 style="margin:0.75em 0 0.25em;">Neîncercate</h4>
-            ${mkList(unattempted)}
-            <h4 style="margin:0.75em 0 0.25em;">Rezolvate</h4>
-            ${mkList(solved)}`;
+      listDiv.replaceChildren();
+
+      const h3 = document.createElement('h3');
+      h3.textContent = 'Lista (filtrată):';
+      listDiv.appendChild(h3);
+
+      const counts = document.createElement('div');
+      counts.style.marginBottom = '0.5em';
+      counts.appendChild(document.createTextNode('Încercate: '));
+      const triedB = document.createElement('b');
+      triedB.textContent = String(tried.length);
+      counts.appendChild(triedB);
+      counts.appendChild(document.createTextNode(' · Neîncercate: '));
+      const unattemptedB = document.createElement('b');
+      unattemptedB.textContent = String(unattempted.length);
+      counts.appendChild(unattemptedB);
+      counts.appendChild(document.createTextNode(' · Rezolvate: '));
+      const solvedB = document.createElement('b');
+      solvedB.textContent = String(solved.length);
+      counts.appendChild(solvedB);
+      listDiv.appendChild(counts);
+
+      const sections = [
+        { label: 'Încercate', items: tried },
+        { label: 'Neîncercate', items: unattempted },
+        { label: 'Rezolvate', items: solved },
+      ];
+      for (const s of sections) {
+        const h4 = document.createElement('h4');
+        h4.style.margin = '0.75em 0 0.25em';
+        h4.textContent = s.label;
+        listDiv.appendChild(h4);
+        listDiv.appendChild(mkList(s.items));
+      }
     }
 
     function renderResults() {
@@ -957,19 +1005,36 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     function updateProgress(inFlight) {
       const elapsedMs = Date.now() - startedAt;
       const pagesDone = stats.pages;
-      const pagesText = Number.isFinite(totalPages) ? `${pagesDone}/${totalPages}` : `${pagesDone}`;
-      const probsText = Number.isFinite(totalProblems)
-        ? `${stats.total}/${totalProblems}`
-        : `${stats.total}`;
+      const scanStart = Math.max(1, Number.isFinite(config.startPage) ? config.startPage : 1);
+      const scanPagesTotal = Number.isFinite(totalPages)
+        ? Math.max(0, totalPages - scanStart + 1)
+        : null;
+      const pagesText =
+        scanPagesTotal != null && scanPagesTotal > 0
+          ? `${pagesDone}/${scanPagesTotal}`
+          : `${pagesDone}`;
+      const scanProblemsTotal =
+        Number.isFinite(totalProblems) && Number.isFinite(pageSize)
+          ? Math.max(0, totalProblems - pageSize * (scanStart - 1))
+          : null;
+      const probsText =
+        scanProblemsTotal != null && scanProblemsTotal > 0
+          ? `${stats.total}/${scanProblemsTotal}`
+          : Number.isFinite(totalProblems)
+            ? `${stats.total}/${totalProblems}`
+            : `${stats.total}`;
       const speed = elapsedMs > 0 ? pagesDone / (elapsedMs / 1000) : 0;
       const etaMs =
-        Number.isFinite(totalPages) && speed > 0 ? ((totalPages - pagesDone) / speed) * 1000 : null;
+        scanPagesTotal != null && scanPagesTotal > 0 && speed > 0
+          ? ((scanPagesTotal - pagesDone) / speed) * 1000
+          : null;
       const etaText = etaMs != null ? ` · ETA ~${formatDuration(etaMs)}` : '';
       const pauseText = paused ? ' · pauză' : '';
       const inflightText = inFlight > 0 ? ` · în lucru ${inFlight}` : '';
+      const startText = scanStart > 1 ? ` (de la ${scanStart})` : '';
       progressDiv.textContent = `Progres: pagini ${pagesText}, probleme ${probsText} · timp ${formatDuration(
         elapsedMs
-      )}${etaText}${pauseText}${inflightText}`;
+      )}${etaText}${pauseText}${inflightText}${startText}`;
     }
 
     setupControls();
@@ -1036,14 +1101,69 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       const list = Array.isArray(visibleProblems) ? visibleProblems : getVisibleProblems();
       list.forEach((p, i) => {
         const row = document.createElement('tr');
-        row.innerHTML = `<td>${i + 1}.</td>
-                <td><a href="${p.link}" target="_blank" rel="noopener noreferrer">#${p.id} - ${p.name}</a></td>
-                <td>${p.userScore != null && Number.isFinite(p.userScore) ? `${p.userScore}p` : '-'}</td>
-                <td><span class="pill" style="background-color:#${statusColor(p.status)};">${statusLabel(p.status)}</span></td>
-                <td><span class="pill" style="background-color:#${difficultyColor(p.difficulty)};">${numberToDifficulty(p.difficulty)}</span></td>
-                <td>${p.postedBy_link ? `<a target="_blank" rel="noopener noreferrer" href="${p.postedBy_link}"><img style="vertical-align:middle;width:1.1em;" src="${p.postedBy_img}"> ${p.postedBy_name}</a>` : ''}</td>
-                <td>${p.author}</td>
-                <td>${p.source}</td>`;
+
+        const tdCnt = document.createElement('td');
+        tdCnt.textContent = `${i + 1}.`;
+        row.appendChild(tdCnt);
+
+        const tdName = document.createElement('td');
+        const nameA = document.createElement('a');
+        nameA.href = p.link;
+        nameA.target = '_blank';
+        nameA.rel = 'noopener noreferrer';
+        nameA.textContent = `#${p.id} - ${p.name}`;
+        tdName.appendChild(nameA);
+        row.appendChild(tdName);
+
+        const tdScore = document.createElement('td');
+        tdScore.textContent =
+          p.userScore != null && Number.isFinite(p.userScore) ? `${p.userScore}p` : '-';
+        row.appendChild(tdScore);
+
+        const tdStatus = document.createElement('td');
+        const statusSpan = document.createElement('span');
+        statusSpan.className = 'pill';
+        statusSpan.style.backgroundColor = `#${statusColor(p.status)}`;
+        statusSpan.textContent = statusLabel(p.status);
+        tdStatus.appendChild(statusSpan);
+        row.appendChild(tdStatus);
+
+        const tdDifficulty = document.createElement('td');
+        const diffSpan = document.createElement('span');
+        diffSpan.className = 'pill';
+        diffSpan.style.backgroundColor = `#${difficultyColor(p.difficulty)}`;
+        diffSpan.textContent = numberToDifficulty(p.difficulty);
+        tdDifficulty.appendChild(diffSpan);
+        row.appendChild(tdDifficulty);
+
+        const tdPostedBy = document.createElement('td');
+        if (p.postedBy_link) {
+          const pbA = document.createElement('a');
+          pbA.href = p.postedBy_link;
+          pbA.target = '_blank';
+          pbA.rel = 'noopener noreferrer';
+          if (p.postedBy_img) {
+            const img = document.createElement('img');
+            img.style.verticalAlign = 'middle';
+            img.style.width = '1.1em';
+            img.src = p.postedBy_img;
+            img.alt = '';
+            pbA.appendChild(img);
+            pbA.appendChild(document.createTextNode(' '));
+          }
+          pbA.appendChild(document.createTextNode(p.postedBy_name || ''));
+          tdPostedBy.appendChild(pbA);
+        }
+        row.appendChild(tdPostedBy);
+
+        const tdAuthor = document.createElement('td');
+        tdAuthor.textContent = p.author || '';
+        row.appendChild(tdAuthor);
+
+        const tdSource = document.createElement('td');
+        tdSource.textContent = p.source || '';
+        row.appendChild(tdSource);
+
         tbody.appendChild(row);
       });
     }
@@ -1256,9 +1376,16 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         const cards = pageEl.querySelectorAll('div.card.mb-3');
 
         if (pageIndex === firstFetchedPageIndex) {
-          if (pageSize == null && cards.length > 0) {
-            pageSize = cards.length;
-            addLog(`Page size detectată automat: ${pageSize}.`);
+          if (pageSize == null) {
+            if (pageIndex === 1 && cards.length > 0) {
+              pageSize = cards.length;
+              addLog(`Page size detectată automat: ${pageSize}.`);
+            } else {
+              pageSize = effectivePageSize;
+              addLog(
+                `Page size implicită: ${pageSize} (pentru resume; setează PBINFO_GET_UNSOLVED_PAGE_SIZE dacă e diferit).`
+              );
+            }
           }
           if (totalProblems == null) {
             const t = parseTotalProblems(responseText);
