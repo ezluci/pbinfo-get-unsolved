@@ -14,6 +14,7 @@ Obține o listă cu problemele nerezolvate de la o categorie de probleme de pe p
 Scriptul va scana paginile din listă și va afișa un tabel + o listă cu problemele care nu sunt rezolvate cu punctaj maxim.
 
 După scanare:
+
 - Folosește controalele de filtrare (stare + punctaj) pentru a restrânge lista.
 - Folosește butoanele de export pentru a salva rezultatele în CSV/JSON.
 - Poți copia rapid link-urile (lista filtrată) în clipboard.
@@ -35,8 +36,8 @@ window.PBINFO_GET_UNSOLVED_START_PAGE = 1; // default 1 (resume: > 1)
 
 // paginare (în caz că pbinfo schimbă parametrii)
 window.PBINFO_GET_UNSOLVED_PAGE_SIZE = 10; // default auto
-window.PBINFO_GET_UNSOLVED_PAGINATION_MODE = "offset"; // "offset" | "page"
-window.PBINFO_GET_UNSOLVED_PAGE_PARAM = "start"; // default "start"
+window.PBINFO_GET_UNSOLVED_PAGINATION_MODE = 'offset'; // "offset" | "page"
+window.PBINFO_GET_UNSOLVED_PAGE_PARAM = 'start'; // default "start"
 window.PBINFO_GET_UNSOLVED_PAGE_BASE = 1; // doar pentru mode="page"
 ```
 
@@ -82,6 +83,14 @@ Lint + format:
 npm run lint
 npm run format
 ```
+
+## Changelog (scurt)
+
+Acest changelog este ținut manual și include doar schimbări majore.
+
+### Unreleased
+
+- Îmbunătățiri la scanare, raportare, export și UI (filtre + dark mode).
 
 ## Issues / sugestii
 

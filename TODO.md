@@ -1,6 +1,7 @@
 # Project Backlog
 
 ## High priority
+
 - [x] Fix unsolved detection when pbinfo shows max points instead of user score
 - [x] Add robust score parsing (title/data-bs-title variants, multiple numbers like `0/100`)
 - [x] Detect and label statuses: solved / tried / unattempted
@@ -12,6 +13,7 @@
 - [x] Add HTML fixture tests for common pbinfo card layouts
 
 ## Medium priority
+
 - [x] Add UI controls to filter by status and score threshold
 - [x] Add option to export results as CSV/JSON
 - [x] Improve progress reporting (ETA, pages scanned, problems scanned)
@@ -23,6 +25,7 @@
 - [x] Add ESLint + formatting to keep style consistent
 
 ## Low priority
+
 - [x] Add a “copy links to clipboard” button
 - [x] Add a “resume from page N” option
 - [x] Add a “stop scan” button during long runs
@@ -32,5 +35,5 @@
 - [x] Add better table styling (sticky header, row hover)
 - [x] Add dark mode styling for the generated report
 - [ ] Add theme toggle (system/light/dark)
-- [ ] Add a small changelog section in README
-- [ ] Add GitHub Actions to run tests on PRs
+- [x] Add a small changelog section in README
+- [x] Add GitHub Actions to run tests on PRs
