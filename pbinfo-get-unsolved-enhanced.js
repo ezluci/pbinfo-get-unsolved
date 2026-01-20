@@ -762,6 +762,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       updateList(visible);
     }
 
+    let renderTimer = null;
+    function requestRenderResults() {
+      if (renderTimer != null) clearTimeout(renderTimer);
+      renderTimer = setTimeout(() => {
+        renderTimer = null;
+        renderResults();
+      }, 150);
+    }
+
     function downloadText(filename, content, mime) {
       const blob = new Blob([content], { type: mime || 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -845,7 +854,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       minInput.addEventListener('input', () => {
         const v = Number(minInput.value);
         filterState.scoreMin = Number.isFinite(v) && minInput.value !== '' ? v : null;
-        renderResults();
+        requestRenderResults();
       });
       minLabel.appendChild(minInput);
       groupScore.appendChild(minLabel);
@@ -859,7 +868,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       maxInput.addEventListener('input', () => {
         const v = Number(maxInput.value);
         filterState.scoreMax = Number.isFinite(v) && maxInput.value !== '' ? v : null;
-        renderResults();
+        requestRenderResults();
       });
       maxLabel.appendChild(maxInput);
       groupScore.appendChild(maxLabel);
