@@ -1,0 +1,10 @@
+{
+  "name": "pbinfo-get-unsolved",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.12"
+  }
+}

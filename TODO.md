@@ -3,13 +3,13 @@
 ## High priority
 - [x] Fix unsolved detection when pbinfo shows max points instead of user score
 - [x] Add robust score parsing (title/data-bs-title variants, multiple numbers like `0/100`)
-- [ ] Detect and label statuses: solved / tried / unattempted
+- [x] Detect and label statuses: solved / tried / unattempted
 - [x] Add request retry/backoff on transient failures and rate limiting
-- [ ] Add safer termination conditions (avoid premature stop on empty/blocked pages)
-- [ ] Add debug mode to dump per-card metadata when parsing fails
+- [x] Add safer termination conditions (avoid premature stop on empty/blocked pages)
+- [x] Add debug mode to dump per-card metadata when parsing fails
 - [x] Update README to reference `pbinfo-get-unsolved-enhanced.js` and current workflow
 - [x] Add regression tests for score parsing heuristics
-- [ ] Add HTML fixture tests for common pbinfo card layouts
+- [x] Add HTML fixture tests for common pbinfo card layouts
 
 ## Medium priority
 - [ ] Add UI controls to filter by status and score threshold

@@ -13,6 +13,31 @@ Obține o listă cu problemele nerezolvate de la o categorie de probleme de pe p
 
 Scriptul va scana paginile din listă și va afișa un tabel + o listă cu problemele care nu sunt rezolvate cu punctaj maxim.
 
+## Debug
+
+Dacă scriptul ratează probleme sau nu reușește să identifice punctajul, poți activa un mod de debug (log în consolă).
+
+Înainte să rulezi scriptul, execută în consolă:
+
+```js
+window.PBINFO_GET_UNSOLVED_DEBUG = true;
+window.PBINFO_GET_UNSOLVED_DEBUG_IDS = [4926, 4928, 4929, 4930, 4936];
+// opțional:
+window.PBINFO_GET_UNSOLVED_DEBUG_LIMIT = 50;
+window.PBINFO_GET_UNSOLVED_DEBUG_HTML = false;
+```
+
+Apoi rulează din nou `pbinfo-get-unsolved-enhanced.js`. Vei primi dump-uri cu ce “vede” parser-ul pentru cardurile respective.
+
+## Development
+
+Rulează testele local:
+
+```bash
+npm install
+npm test
+```
+
 ## Issues / sugestii
 
 Pentru nelămuriri sau sugestii, creează un Issue în acest repository.
