@@ -19,6 +19,8 @@ După scanare:
 - Folosește butoanele de export pentru a salva rezultatele în CSV/JSON.
 - Poți copia rapid (lista filtrată) în clipboard: link-uri / ID-uri / Markdown.
 - Tabelul are header sticky + highlight la hover și se adaptează automat la dark mode (tema browser-ului).
+- Poți salva/încărca starea scanării în `localStorage` (util pentru reload-resume).
+- Poți schimba tema din UI (sistem/light/dark).
 
 În timpul scanării poți opri rularea din butonul **Stop scan** sau o poți pune pe pauză (**Pauză/Continuă**); rezultatele parțiale rămân afișate.
 
@@ -34,6 +36,9 @@ window.PBINFO_GET_UNSOLVED_TIMEOUT_MS = 30000; // default 30000
 window.PBINFO_GET_UNSOLVED_MAX_RETRIES = 3; // default 3
 window.PBINFO_GET_UNSOLVED_START_PAGE = 1; // default 1 (resume: > 1)
 window.PBINFO_GET_UNSOLVED_MAX_PAGES = 5000; // fallback cap (dacă pbinfo nu mai raportează totalul corect)
+window.PBINFO_GET_UNSOLVED_AUTOSAVE = true; // default true (autosave în localStorage)
+window.PBINFO_GET_UNSOLVED_AUTOSAVE_PAGES = 50; // default 50
+window.PBINFO_GET_UNSOLVED_AUTOSAVE_MS = 120000; // default 120000
 
 // paginare (în caz că pbinfo schimbă parametrii)
 window.PBINFO_GET_UNSOLVED_PAGE_SIZE = 10; // default auto
@@ -93,7 +98,8 @@ Acest changelog este ținut manual și include doar schimbări majore.
 
 ### Unreleased
 
-- Îmbunătățiri la scanare, raportare, export și UI (filtre + dark mode).
+- Îmbunătățiri la scanare, raportare, export și UI (filtre + dark mode + theme toggle).
+- Salvare/încărcare stare scanare în `localStorage` (resume după reload).
 
 ## Issues / sugestii
 

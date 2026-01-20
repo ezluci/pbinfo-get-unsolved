@@ -299,6 +299,65 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     window.console = iFrame.contentWindow.console;
     console.clear();
 
+    const STORAGE_NAMESPACE = 'pbinfo-get-unsolved';
+    const STATE_STORAGE_VERSION = 1;
+    const THEME_STORAGE_KEY = `${STORAGE_NAMESPACE}:theme`;
+
+    function safeJsonParse(value) {
+      if (typeof value !== 'string' || value.trim() === '') return null;
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+
+    function fnv1a32(str) {
+      const s = String(str || '');
+      let h = 0x811c9dc5;
+      for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+      }
+      return (h >>> 0).toString(16).padStart(8, '0');
+    }
+
+    function makeStateKeys(pageLink) {
+      const h = fnv1a32(pageLink);
+      return {
+        full: `${STORAGE_NAMESPACE}:state:v${STATE_STORAGE_VERSION}:${h}`,
+        minimal: `${STORAGE_NAMESPACE}:state-min:v${STATE_STORAGE_VERSION}:${h}`,
+      };
+    }
+
+    function formatDateTime(ts) {
+      const d = new Date(Number(ts));
+      if (!Number.isFinite(d.getTime())) return '-';
+      return d.toLocaleString();
+    }
+
+    function loadThemePreference() {
+      try {
+        const v = normalizeSpace(localStorage.getItem(THEME_STORAGE_KEY));
+        if (v === 'light' || v === 'dark' || v === 'system') return v;
+      } catch {}
+      return 'system';
+    }
+
+    function persistThemePreference(value) {
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, value);
+      } catch {}
+    }
+
+    function applyThemePreference(value) {
+      const v = value === 'light' || value === 'dark' || value === 'system' ? value : 'system';
+      if (v === 'system') document.documentElement.removeAttribute('data-theme');
+      else document.documentElement.setAttribute('data-theme', v);
+      persistThemePreference(v);
+      return v;
+    }
+
     const config = {
       pagination: {
         mode: window.PBINFO_GET_UNSOLVED_PAGINATION_MODE || 'offset',
@@ -369,28 +428,91 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       return;
     }
 
-    let startPageInput = prompt(
-      'De la ce pagină să încep scanarea?\n' +
-        '1 = de la început. Pentru resume, pune un număr mai mare.\n' +
-        'Enter = valoarea default.',
-      String(config.startPage)
+    const stateKeys = makeStateKeys(pageLink);
+    const savedFull = safeJsonParse(
+      (() => {
+        try {
+          return localStorage.getItem(stateKeys.full);
+        } catch {
+          return null;
+        }
+      })()
     );
-    if (startPageInput === null) {
-      console.warn('Nu a fost furnizat start page. Scriptul a fost oprit.');
-      return;
+    const savedMinimal =
+      savedFull == null
+        ? safeJsonParse(
+            (() => {
+              try {
+                return localStorage.getItem(stateKeys.minimal);
+              } catch {
+                return null;
+              }
+            })()
+          )
+        : null;
+
+    let pendingRestore = null;
+    let restoreMode = null;
+    const candidate = savedFull || savedMinimal;
+    if (candidate && candidate.pageLink === pageLink) {
+      const savedAt = formatDateTime(candidate.savedAt);
+      const pages = Number.isFinite(candidate.stats?.pages) ? candidate.stats.pages : null;
+      const problems = Number.isFinite(candidate.stats?.total)
+        ? candidate.stats.total
+        : Array.isArray(candidate.problems)
+          ? candidate.problems.length
+          : null;
+      const kind = savedFull ? 'full' : 'minimal';
+      const note = kind === 'minimal' ? ' (doar progres, fără lista completă)' : '';
+      const ok = confirm(
+        `Am găsit un scan salvat pentru acest link${note}.\n` +
+          `Salvat la: ${savedAt}\n` +
+          `${pages != null ? `Pagini scanate: ${pages}\n` : ''}` +
+          `${problems != null ? `Probleme scanate: ${problems}\n` : ''}` +
+          `\nOK = încarcă, Cancel = ignoră`
+      );
+      if (ok) {
+        pendingRestore = candidate;
+        restoreMode = kind;
+        if (candidate.pagination && typeof candidate.pagination === 'object') {
+          if (candidate.pagination.mode) config.pagination.mode = candidate.pagination.mode;
+          if (candidate.pagination.param) config.pagination.param = candidate.pagination.param;
+          if (Number.isFinite(candidate.pagination.pageBase))
+            config.pagination.pageBase = candidate.pagination.pageBase;
+        }
+        if (Number.isFinite(candidate.scanStartPage)) config.startPage = candidate.scanStartPage;
+        else if (Number.isFinite(candidate.config?.startPage))
+          config.startPage = candidate.config.startPage;
+      }
     }
-    startPageInput = normalizeSpace(startPageInput);
-    const startPage = startPageInput === '' ? config.startPage : parseInt(startPageInput, 10);
-    if (!Number.isFinite(startPage) || startPage < 1) {
-      console.warn('Start page invalid. Scriptul a fost oprit.');
-      return;
+
+    if (pendingRestore == null) {
+      let startPageInput = prompt(
+        'De la ce pagină să încep scanarea?\n' +
+          '1 = de la început. Pentru resume, pune un număr mai mare.\n' +
+          'Enter = valoarea default.',
+        String(config.startPage)
+      );
+      if (startPageInput === null) {
+        console.warn('Nu a fost furnizat start page. Scriptul a fost oprit.');
+        return;
+      }
+      startPageInput = normalizeSpace(startPageInput);
+      const startPage = startPageInput === '' ? config.startPage : parseInt(startPageInput, 10);
+      if (!Number.isFinite(startPage) || startPage < 1) {
+        console.warn('Start page invalid. Scriptul a fost oprit.');
+        return;
+      }
+      config.startPage = startPage;
     }
-    config.startPage = startPage;
+
     const firstFetchedPageIndex = config.startPage;
+    let themePreference = loadThemePreference();
 
     // wipe the page and setup UI
     document.head.innerHTML = '';
     document.body.innerHTML = '';
+    themePreference = applyThemePreference(themePreference);
 
     const title = document.createElement('h2');
     title.style.display = 'block';
@@ -401,7 +523,6 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     style.innerHTML = `
         :root{
             font-family: Arial, sans-serif;
-            color-scheme: light dark;
             --bg: #ffffff;
             --text: #111827;
             --muted: #6b7280;
@@ -414,7 +535,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             --link: #1d4ed8;
         }
         @media (prefers-color-scheme: dark){
-            :root{
+            :root:not([data-theme]){
                 --bg: #0b0f14;
                 --text: #e5e7eb;
                 --muted: #9ca3af;
@@ -427,6 +548,21 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                 --link: #93c5fd;
             }
         }
+        :root{ color-scheme: light dark; }
+        :root[data-theme="light"]{ color-scheme: light; }
+        :root[data-theme="dark"]{ color-scheme: dark; }
+        :root[data-theme="dark"]{
+            --bg: #0b0f14;
+            --text: #e5e7eb;
+            --muted: #9ca3af;
+            --border: #243041;
+            --panel: #121826;
+            --btn-hover: #1b2a44;
+            --table-header-bg: #121826;
+            --table-row-alt: #0f1522;
+            --table-row-hover: #1b2a44;
+            --link: #93c5fd;
+        }
         body{margin:0;padding:0.9rem;background:var(--bg);color:var(--text);}
         a{color:var(--link);text-decoration:none;}
         a:hover{cursor:pointer;text-decoration:underline;}
@@ -436,6 +572,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         #controls label{display:flex;gap:0.4em;align-items:center;user-select:none;}
         #controls input[type="checkbox"]{accent-color:var(--link);}
         #controls input[type="number"]{width:8em;border:1px solid var(--border);border-radius:0.45em;padding:0.2em 0.35em;background:var(--bg);color:var(--text);}
+        #controls select{width:12em;border:1px solid var(--border);border-radius:0.45em;padding:0.25em 0.35em;background:var(--bg);color:var(--text);}
         #controls button{padding:0.35em 0.65em;border:1px solid var(--border);border-radius:0.45em;background:transparent;color:var(--text);}
         #controls button:hover{background:var(--btn-hover);}
         #controls button:disabled{opacity:0.55;cursor:not-allowed;}
@@ -491,15 +628,18 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     let pageSize = config.pageSize;
     let totalProblems = null;
     let totalPages = null;
-    const startedAt = Date.now();
+    let startedAt = Date.now();
 
     const stats = { solved: 0, tried: 0, unattempted: 0, total: 0, pages: 0 };
     let finished = false;
+    let scanEnd = null;
+    let restoringState = false;
     let stopRequested = false;
     let paused = false;
     let stopButton = null;
     let pauseButton = null;
     const activeRequests = new Set();
+    const activePageIndexes = new Set();
 
     const debugEnabled = Boolean(window.PBINFO_GET_UNSOLVED_DEBUG);
     const debugDumpLimit = Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_DEBUG_LIMIT))
@@ -617,6 +757,11 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     table.style.width = '75%';
     table.style.minWidth = '450px';
     table.style.maxWidth = '1050px';
+
+    function ensureResultsAttached() {
+      if (!table.isConnected) document.body.appendChild(table);
+      if (!listDiv.isConnected) document.body.appendChild(listDiv);
+    }
 
     function quickSort(arr, left, right, key) {
       let index;
@@ -809,6 +954,11 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       paused = !paused;
       if (pauseButton) pauseButton.textContent = paused ? 'Continuă' : 'Pauză';
       addLog(paused ? '<b>Scanare pusă pe pauză.</b>' : '<b>Scanare reluată.</b>');
+      if (paused) {
+        ensureResultsAttached();
+        renderResults();
+        saveScanState({ mode: 'full', reason: 'pause', silent: true });
+      }
       updateProgress(inFlight);
       if (!paused) {
         for (let i = 0; i < config.concurrency; i++) schedule(kick);
@@ -851,6 +1001,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       minInput.type = 'number';
       minInput.min = '0';
       minInput.placeholder = '-';
+      if (filterState.scoreMin != null && Number.isFinite(filterState.scoreMin)) {
+        minInput.value = String(filterState.scoreMin);
+      }
       minInput.addEventListener('input', () => {
         const v = Number(minInput.value);
         filterState.scoreMin = Number.isFinite(v) && minInput.value !== '' ? v : null;
@@ -865,6 +1018,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       maxInput.type = 'number';
       maxInput.min = '0';
       maxInput.placeholder = '-';
+      if (filterState.scoreMax != null && Number.isFinite(filterState.scoreMax)) {
+        maxInput.value = String(filterState.scoreMax);
+      }
       maxInput.addEventListener('input', () => {
         const v = Number(maxInput.value);
         filterState.scoreMax = Number.isFinite(v) && maxInput.value !== '' ? v : null;
@@ -884,6 +1040,32 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       unknownLabel.appendChild(unknownInput);
       unknownLabel.appendChild(document.createTextNode(' include scor necunoscut'));
       groupScore.appendChild(unknownLabel);
+
+      const groupAppearance = document.createElement('div');
+      groupAppearance.className = 'group';
+      groupAppearance.innerHTML = '<b>Aspect</b>';
+
+      const themeLabel = document.createElement('label');
+      themeLabel.textContent = 'Temă';
+      const themeSelect = document.createElement('select');
+      const themeOptions = [
+        { value: 'system', label: 'Sistem' },
+        { value: 'light', label: 'Light' },
+        { value: 'dark', label: 'Dark' },
+      ];
+      for (const o of themeOptions) {
+        const opt = document.createElement('option');
+        opt.value = o.value;
+        opt.textContent = o.label;
+        themeSelect.appendChild(opt);
+      }
+      themeSelect.value = themePreference;
+      themeSelect.addEventListener('change', () => {
+        themePreference = applyThemePreference(themeSelect.value);
+        themeSelect.value = themePreference;
+      });
+      themeLabel.appendChild(themeSelect);
+      groupAppearance.appendChild(themeLabel);
 
       const groupExport = document.createElement('div');
       groupExport.className = 'group';
@@ -979,6 +1161,91 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       });
       groupExport.appendChild(copyMarkdown);
 
+      const groupSession = document.createElement('div');
+      groupSession.className = 'group';
+      groupSession.innerHTML = '<b>Stare (local)</b>';
+
+      const saveStateBtn = document.createElement('button');
+      saveStateBtn.textContent = 'Salvează';
+      saveStateBtn.addEventListener('click', () => {
+        const res = saveScanState({ mode: 'full', reason: 'manual' });
+        if (!res.ok) {
+          addLog('<span style="color:#b30000;">Nu am putut salva starea.</span>');
+          return;
+        }
+        const note =
+          res.kind === 'full'
+            ? ' (salvat complet)'
+            : ' (salvat compact; posibilă limită de spațiu în localStorage)';
+        addLog(`Stare salvată${note}.`);
+        refreshSessionInfo();
+      });
+      groupSession.appendChild(saveStateBtn);
+
+      const loadStateBtn = document.createElement('button');
+      loadStateBtn.textContent = 'Încarcă';
+      loadStateBtn.addEventListener('click', () => {
+        if (!paused && !finished) {
+          addLog(
+            '<span style="color:#b35c00;">Pune scanarea pe pauză înainte să încarci o stare.</span>'
+          );
+          return;
+        }
+        if (inFlight > 0) {
+          addLog(
+            '<span style="color:#b35c00;">Așteaptă să se termine request-urile în lucru înainte să încarci o stare.</span>'
+          );
+          return;
+        }
+        const ok = confirm('Încarci starea salvată? Rezultatele curente vor fi înlocuite.');
+        if (!ok) return;
+        const loaded = loadSavedStateForLink();
+        if (!loaded) {
+          addLog('Nu există stare salvată pentru acest link.');
+          refreshSessionInfo();
+          return;
+        }
+        restoreFromSavedState(loaded.state, loaded.kind);
+        addLog('Stare încărcată.');
+        refreshSessionInfo();
+      });
+      groupSession.appendChild(loadStateBtn);
+
+      const clearStateBtn = document.createElement('button');
+      clearStateBtn.textContent = 'Șterge';
+      clearStateBtn.addEventListener('click', () => {
+        const ok = confirm('Ștergi starea salvată pentru acest link?');
+        if (!ok) return;
+        clearSavedStateForLink();
+        addLog('Stare ștearsă.');
+        refreshSessionInfo();
+      });
+      groupSession.appendChild(clearStateBtn);
+
+      const sessionInfo = document.createElement('div');
+      sessionInfo.className = 'muted';
+      groupSession.appendChild(sessionInfo);
+
+      function refreshSessionInfo() {
+        const existing = loadSavedStateForLink();
+        if (!existing) {
+          loadStateBtn.disabled = true;
+          clearStateBtn.disabled = true;
+          sessionInfo.textContent = 'Nicio stare salvată.';
+          return;
+        }
+        loadStateBtn.disabled = false;
+        clearStateBtn.disabled = false;
+        const savedAt = existing.state?.savedAt ? formatDateTime(existing.state.savedAt) : '-';
+        const level =
+          existing.kind === 'full'
+            ? 'complet'
+            : existing.state?.storageLevel === 'progress'
+              ? 'progres'
+              : 'compact';
+        sessionInfo.textContent = `Salvat (${level}) la ${savedAt}.`;
+      }
+
       const groupScan = document.createElement('div');
       groupScan.className = 'group';
       groupScan.innerHTML = '<b>Scan</b>';
@@ -998,7 +1265,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       scanNote.textContent = `resume: start page > 1 (curent ${config.startPage}) · maxPages=${config.maxPages}`;
       groupScan.appendChild(scanNote);
 
-      controlsDiv.replaceChildren(groupStatus, groupScore, groupExport, groupScan);
+      controlsDiv.replaceChildren(
+        groupStatus,
+        groupScore,
+        groupAppearance,
+        groupExport,
+        groupSession,
+        groupScan
+      );
+      refreshSessionInfo();
     }
 
     function formatDuration(ms) {
@@ -1179,12 +1454,17 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     function finishScan({ complete, reason }) {
       if (finished) return;
+      scanEnd = {
+        finished: true,
+        complete: Boolean(complete),
+        reason: reason ? String(reason) : null,
+        endedAt: Date.now(),
+      };
       finished = true;
       if (pauseButton) pauseButton.disabled = true;
       if (stopButton) stopButton.disabled = true;
 
-      document.body.appendChild(table);
-      document.body.appendChild(listDiv);
+      ensureResultsAttached();
       renderResults();
 
       const summary = `Rezumat: ${stats.solved} rezolvate, ${stats.tried} încercate, ${stats.unattempted} neîncercate (total ${stats.total}, pagini ${stats.pages}).`;
@@ -1195,6 +1475,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         addLog(
           `<u>Am terminat de extras problemele.</u> Sunt ${unsolvedCount} probleme nerezolvate. Tabelul și lista au fost adăugate mai jos.`
         );
+        saveScanState({ mode: 'full', reason: 'complete', silent: true });
         return;
       }
 
@@ -1202,6 +1483,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       addLog(
         `<span style="color:#b30000;"><u>Scanarea s-a oprit înainte de final.</u></span>${reasonText}`
       );
+      saveScanState({ mode: 'full', reason: 'stopped', silent: true });
     }
 
     // Fetch pages (optional concurrency)
@@ -1211,6 +1493,358 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     let nextSequentialPage = null;
     let queueInitialized = false;
     let inFlight = 0;
+
+    const autosaveConfig = {
+      enabled: window.PBINFO_GET_UNSOLVED_AUTOSAVE !== false,
+      everyPages: Math.max(
+        1,
+        Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_AUTOSAVE_PAGES))
+          ? Number(window.PBINFO_GET_UNSOLVED_AUTOSAVE_PAGES)
+          : 50
+      ),
+      everyMs: Math.max(
+        5000,
+        Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_AUTOSAVE_MS))
+          ? Number(window.PBINFO_GET_UNSOLVED_AUTOSAVE_MS)
+          : 120000
+      ),
+    };
+    let lastAutosaveAt = 0;
+    let lastAutosavePages = 0;
+    let autosaveDisabled = false;
+
+    function loadSavedStateForLink() {
+      const read = (key) => {
+        try {
+          return safeJsonParse(localStorage.getItem(key));
+        } catch {
+          return null;
+        }
+      };
+      const full = read(stateKeys.full);
+      if (full && full.pageLink === pageLink) return { kind: 'full', state: full };
+      const minimal = read(stateKeys.minimal);
+      if (minimal && minimal.pageLink === pageLink) return { kind: 'minimal', state: minimal };
+      return null;
+    }
+
+    function clearSavedStateForLink() {
+      try {
+        localStorage.removeItem(stateKeys.full);
+      } catch {}
+      try {
+        localStorage.removeItem(stateKeys.minimal);
+      } catch {}
+    }
+
+    function serializeFilters() {
+      return {
+        statuses: Array.from(filterState.statuses),
+        includeUnknownScore: Boolean(filterState.includeUnknownScore),
+        scoreMin: Number.isFinite(filterState.scoreMin) ? filterState.scoreMin : null,
+        scoreMax: Number.isFinite(filterState.scoreMax) ? filterState.scoreMax : null,
+      };
+    }
+
+    function serializeSorted() {
+      return { ...sorted };
+    }
+
+    function serializeProblem(p, level) {
+      const base = {
+        id: p?.id,
+        name: p?.name,
+        link: p?.link,
+        difficulty: p?.difficulty,
+        status: p?.status,
+        userScore: Number.isFinite(p?.userScore) ? p.userScore : null,
+        maxScore: Number.isFinite(p?.maxScore) ? p.maxScore : null,
+      };
+      if (level === 'minimal') return base;
+      return {
+        ...base,
+        postedBy_link: p?.postedBy_link,
+        postedBy_name: p?.postedBy_name,
+        postedBy_img: p?.postedBy_img,
+        author: p?.author,
+        source: p?.source,
+      };
+    }
+
+    function computeResumeFromStateSnapshot(snapshot) {
+      const candidates = [];
+      const q = Array.isArray(snapshot?.pageQueue) ? snapshot.pageQueue : [];
+      if (q.length > 0 && Number.isFinite(q[0])) candidates.push(q[0]);
+      const d = Array.isArray(snapshot?.deferred) ? snapshot.deferred : [];
+      for (const entry of d) {
+        const pageIndex = Array.isArray(entry) ? entry[0] : entry?.pageIndex;
+        if (Number.isFinite(pageIndex)) candidates.push(pageIndex);
+      }
+      const f = Array.isArray(snapshot?.inFlightPages) ? snapshot.inFlightPages : [];
+      for (const pageIndex of f) if (Number.isFinite(pageIndex)) candidates.push(pageIndex);
+      if (Number.isFinite(snapshot?.nextSequentialPage))
+        candidates.push(snapshot.nextSequentialPage);
+      const min = candidates.length > 0 ? Math.min(...candidates) : null;
+      return Number.isFinite(min) ? min : null;
+    }
+
+    function buildStateSnapshot(level, reason) {
+      const now = Date.now();
+      const snapshot = {
+        version: STATE_STORAGE_VERSION,
+        storageLevel: level,
+        savedAt: now,
+        pageLink,
+        pagination: { ...config.pagination },
+        scanStartPage: config.startPage,
+        pageSize: Number.isFinite(pageSize) ? pageSize : null,
+        totalProblems: Number.isFinite(totalProblems) ? totalProblems : null,
+        totalPages: Number.isFinite(totalPages) ? totalPages : null,
+        elapsedMs: now - startedAt,
+        stats: { ...stats },
+        filters: serializeFilters(),
+        sorted: serializeSorted(),
+        queueInitialized: Boolean(queueInitialized),
+        pageQueue: Array.from(pageQueue),
+        deferred: Array.from(deferredPageRequests.entries()),
+        nextSequentialPage: Number.isFinite(nextSequentialPage) ? nextSequentialPage : null,
+        inFlightPages: Array.from(activePageIndexes),
+        paused: Boolean(paused),
+        stopRequested: Boolean(stopRequested),
+        end: scanEnd,
+        reason: reason ? String(reason) : null,
+      };
+
+      snapshot.resumeFromPage = computeResumeFromStateSnapshot(snapshot);
+
+      if (level === 'progress') {
+        snapshot.seenProblemIds = Array.from(seenProblemIds);
+        return snapshot;
+      }
+
+      snapshot.problems = allProblems.map((p) => serializeProblem(p, level));
+      snapshot.seenProblemIds = Array.from(seenProblemIds);
+      return snapshot;
+    }
+
+    function saveScanState({ mode, reason, silent } = {}) {
+      const desired = mode === 'minimal' || mode === 'progress' ? mode : 'full';
+      const write = (key, value) => {
+        localStorage.setItem(key, JSON.stringify(value));
+      };
+
+      try {
+        if (desired === 'full') {
+          const snap = buildStateSnapshot('full', reason);
+          write(stateKeys.full, snap);
+          try {
+            localStorage.removeItem(stateKeys.minimal);
+          } catch {}
+          return { ok: true, kind: 'full' };
+        }
+      } catch (err) {
+        if (!silent) console.warn('Failed to save full state:', err);
+      }
+
+      try {
+        const snap = buildStateSnapshot('minimal', reason);
+        write(stateKeys.minimal, snap);
+        return { ok: true, kind: 'minimal' };
+      } catch (err) {
+        if (!silent) console.warn('Failed to save minimal state:', err);
+      }
+
+      try {
+        const snap = buildStateSnapshot('progress', reason);
+        write(stateKeys.minimal, snap);
+        return { ok: true, kind: 'minimal' };
+      } catch (err) {
+        if (!silent) console.warn('Failed to save progress state:', err);
+        return { ok: false, kind: null };
+      }
+    }
+
+    function restoreFromSavedState(state, kind) {
+      if (!state || state.pageLink !== pageLink) return false;
+      restoringState = true;
+      try {
+        for (const xhr of activeRequests) {
+          try {
+            xhr.abort();
+          } catch {}
+        }
+        activeRequests.clear();
+        activePageIndexes.clear();
+        inFlight = 0;
+
+        stopRequested = Boolean(state.stopRequested);
+        paused = Boolean(state.paused);
+        scanEnd = state.end && typeof state.end === 'object' ? state.end : null;
+
+        if (state.pagination && typeof state.pagination === 'object') {
+          if (state.pagination.mode) config.pagination.mode = state.pagination.mode;
+          if (state.pagination.param) config.pagination.param = state.pagination.param;
+          if (Number.isFinite(state.pagination.pageBase))
+            config.pagination.pageBase = state.pagination.pageBase;
+        }
+
+        if (Number.isFinite(state.scanStartPage)) config.startPage = state.scanStartPage;
+
+        const elapsed = Number.isFinite(state.elapsedMs) ? state.elapsedMs : null;
+        if (elapsed != null && elapsed >= 0) startedAt = Date.now() - elapsed;
+
+        pageSize = Number.isFinite(state.pageSize) ? state.pageSize : pageSize;
+        totalProblems = Number.isFinite(state.totalProblems) ? state.totalProblems : totalProblems;
+        totalPages = Number.isFinite(state.totalPages) ? state.totalPages : totalPages;
+
+        if (state.stats && typeof state.stats === 'object') {
+          stats.solved = Number.isFinite(state.stats.solved) ? state.stats.solved : 0;
+          stats.tried = Number.isFinite(state.stats.tried) ? state.stats.tried : 0;
+          stats.unattempted = Number.isFinite(state.stats.unattempted)
+            ? state.stats.unattempted
+            : 0;
+          stats.total = Number.isFinite(state.stats.total) ? state.stats.total : 0;
+          stats.pages = Number.isFinite(state.stats.pages) ? state.stats.pages : 0;
+        }
+
+        allProblems.length = 0;
+        seenProblemIds.clear();
+
+        const problems = Array.isArray(state.problems) ? state.problems : [];
+        for (const p of problems) {
+          const id = Number.isFinite(p?.id) ? p.id : NaN;
+          if (!Number.isFinite(id)) continue;
+          const userScore = Number.isFinite(p?.userScore) ? p.userScore : null;
+          const maxScore = Number.isFinite(p?.maxScore) ? p.maxScore : 100;
+          const status =
+            p?.status === 'solved' || p?.status === 'tried' || p?.status === 'unattempted'
+              ? p.status
+              : classifyProblemStatus({ userScore, maxScore });
+          const scoreKnown = userScore != null && Number.isFinite(userScore);
+          allProblems.push({
+            cnt: allProblems.length + 1,
+            id,
+            name: typeof p?.name === 'string' ? p.name : '',
+            link: typeof p?.link === 'string' ? p.link : '',
+            difficulty: Number.isFinite(p?.difficulty) ? p.difficulty : 3,
+            score: scoreKnown ? userScore : -1,
+            scoreKnown,
+            userScore,
+            maxScore,
+            status,
+            postedBy_link: typeof p?.postedBy_link === 'string' ? p.postedBy_link : '',
+            postedBy_name: typeof p?.postedBy_name === 'string' ? p.postedBy_name : '',
+            postedBy_img: typeof p?.postedBy_img === 'string' ? p.postedBy_img : '',
+            author: typeof p?.author === 'string' ? p.author : '',
+            source: typeof p?.source === 'string' ? p.source : '',
+          });
+          seenProblemIds.add(id);
+        }
+
+        if (Array.isArray(state.seenProblemIds) && state.seenProblemIds.length > 0) {
+          for (const n of state.seenProblemIds) {
+            const id = parseInt(n, 10);
+            if (Number.isFinite(id)) seenProblemIds.add(id);
+          }
+        }
+
+        if (state.filters && typeof state.filters === 'object') {
+          const statuses = new Set(
+            Array.isArray(state.filters.statuses) ? state.filters.statuses : []
+          );
+          filterState.statuses.clear();
+          for (const s of ['solved', 'tried', 'unattempted']) {
+            if (statuses.has(s)) filterState.statuses.add(s);
+          }
+          if (filterState.statuses.size === 0) {
+            filterState.statuses.add('tried');
+            filterState.statuses.add('unattempted');
+          }
+          filterState.includeUnknownScore = Boolean(state.filters.includeUnknownScore);
+          filterState.scoreMin = Number.isFinite(state.filters.scoreMin)
+            ? state.filters.scoreMin
+            : null;
+          filterState.scoreMax = Number.isFinite(state.filters.scoreMax)
+            ? state.filters.scoreMax
+            : null;
+        }
+
+        if (state.sorted && typeof state.sorted === 'object') {
+          for (const k of Object.keys(sorted)) {
+            sorted[k] = Number.isFinite(state.sorted[k]) ? state.sorted[k] : 0;
+          }
+        }
+
+        pageQueue.length = 0;
+        deferredPageRequests.clear();
+        queueInitialized = Boolean(state.queueInitialized);
+        if (Array.isArray(state.pageQueue)) {
+          for (const n of state.pageQueue) if (Number.isFinite(n)) pageQueue.push(n);
+        }
+        if (Array.isArray(state.deferred)) {
+          for (const [pageIndex, retryCount] of state.deferred) {
+            if (Number.isFinite(pageIndex) && Number.isFinite(retryCount)) {
+              deferredPageRequests.set(pageIndex, retryCount);
+            }
+          }
+        }
+        nextSequentialPage = Number.isFinite(state.nextSequentialPage)
+          ? state.nextSequentialPage
+          : null;
+        if (nextSequentialPage == null && Number.isFinite(state.resumeFromPage)) {
+          nextSequentialPage = state.resumeFromPage;
+        }
+
+        if (Array.isArray(state.inFlightPages)) {
+          for (const pageIndex of state.inFlightPages) deferPage(pageIndex, 0);
+        }
+
+        finished = Boolean(scanEnd?.finished);
+        setupControls();
+
+        if (pauseButton) pauseButton.textContent = paused ? 'Continuă' : 'Pauză';
+        if (pauseButton) pauseButton.disabled = finished;
+        if (stopButton) stopButton.disabled = finished;
+
+        if (allProblems.length > 0) ensureResultsAttached();
+        renderResults();
+        updateProgress(inFlight);
+
+        if (kind === 'minimal' && state.storageLevel === 'progress') {
+          addLog(
+            '<span style="color:#b35c00;"><b>Notă:</b> stare salvată doar ca progres; lista completă nu este disponibilă.</span>'
+          );
+        } else if (kind === 'minimal') {
+          addLog(
+            '<span style="color:#b35c00;"><b>Notă:</b> stare salvată compact; unele metadate (autor/sursă) pot lipsi.</span>'
+          );
+        }
+
+        return true;
+      } finally {
+        restoringState = false;
+      }
+    }
+
+    function maybeAutoSave(reason) {
+      if (!autosaveConfig.enabled || autosaveDisabled) return;
+      const now = Date.now();
+      if (
+        stats.pages - lastAutosavePages < autosaveConfig.everyPages &&
+        now - lastAutosaveAt < autosaveConfig.everyMs
+      )
+        return;
+      const res = saveScanState({ mode: 'minimal', reason: reason || 'autosave', silent: true });
+      if (!res.ok) {
+        autosaveDisabled = true;
+        addLog(
+          '<span style="color:#b35c00;"><b>Autosave:</b> dezactivat (nu am putut salva în localStorage).</span>'
+        );
+        return;
+      }
+      lastAutosaveAt = now;
+      lastAutosavePages = stats.pages;
+    }
 
     function schedule(fn) {
       if (config.delayMs > 0) setTimeout(fn, config.delayMs);
@@ -1323,11 +1957,13 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       updateProgress(inFlight);
       const xhr = new XMLHttpRequest();
       activeRequests.add(xhr);
+      activePageIndexes.add(pageIndex);
       let finalized = false;
       const finalize = () => {
         if (finalized) return;
         finalized = true;
         activeRequests.delete(xhr);
+        activePageIndexes.delete(pageIndex);
         inFlight = Math.max(0, inFlight - 1);
         updateProgress(inFlight);
       };
@@ -1344,6 +1980,10 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       xhr.timeout = config.timeoutMs;
       xhr.onload = () => {
         const responseText = xhr.responseText || xhr.response || '';
+        if (stopRequested || finished || restoringState) {
+          finalize();
+          return;
+        }
         if (xhr.status !== 200) {
           if (retryCount < maxRetriesPerPage) {
             const delay = 1000 * (retryCount + 1);
@@ -1447,11 +2087,21 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         let pageUnattempted = 0;
         let totalCount = 0;
         let parseFailCount = 0;
+        let idFailCount = 0;
 
         for (let card of cards) {
           const codeEl = card.querySelector('code');
           if (!codeEl) continue;
-          const id = parseInt(codeEl.innerText.trim().slice(1));
+          const idText = normalizeSpace(codeEl.textContent);
+          const idMatch = /(\d+)/.exec(idText);
+          const id = idMatch ? parseInt(idMatch[1], 10) : NaN;
+          if (!Number.isFinite(id)) {
+            idFailCount++;
+            if (debugEnabled && debugDumped < debugDumpLimit && !debugIds) {
+              debugDumpCard(card, { id: null, name: null, link: null, scoreInfo: null });
+            }
+            continue;
+          }
           if (seenProblemIds.has(id)) continue;
           seenProblemIds.add(id);
           totalCount++;
@@ -1495,7 +2145,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           // author
           let author = '';
           const authorSpan = card.querySelector('span[title="Autor"]');
-          if (authorSpan) author = authorSpan.innerText.replace(/^[\s\S]*?\s/, '').trim();
+          if (authorSpan) author = normalizeSpace(authorSpan.textContent);
           // source
           let source = '';
           const srcBlock = card.querySelector('blockquote[title="Sursa problemei"]');
@@ -1548,8 +2198,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         const scoreUnavailable = pageUnattempted === totalCount;
         const scoreWarning = scoreUnavailable ? ' (punctaj indisponibil pentru toate)' : '';
         const parseFailSuffix = parseFailCount > 0 ? ` · parseFail=${parseFailCount}` : '';
+        const idFailSuffix = idFailCount > 0 ? ` · idFail=${idFailCount}` : '';
         addLog(
-          `Pagina ${pageIndex}: rezolvate ${pageSolved}, încercate ${pageTried}, neîncercate ${pageUnattempted} (total ${totalCount})${scoreWarning}${parseFailSuffix}.`
+          `Pagina ${pageIndex}: rezolvate ${pageSolved}, încercate ${pageTried}, neîncercate ${pageUnattempted} (total ${totalCount})${scoreWarning}${parseFailSuffix}${idFailSuffix}.`
         );
         if (pageIndex === firstFetchedPageIndex && totalCount > 0 && scoreUnavailable) {
           addLog(
@@ -1557,6 +2208,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           );
         }
 
+        maybeAutoSave('page');
         finalize();
         if (queueInitialized) {
           schedule(kick);
@@ -1567,11 +2219,12 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       };
       xhr.onabort = () => {
         finalize();
-        if (stopRequested || finished) return;
+        if (stopRequested || finished || restoringState) return;
         finishScan({ complete: false, reason: `Request abort la pagina ${pageIndex}` });
       };
       xhr.ontimeout = () => {
         finalize();
+        if (stopRequested || finished || restoringState) return;
         if (retryCount < maxRetriesPerPage) {
           const delay = 1000 * (retryCount + 1);
           addLog(`Timeout la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
@@ -1582,7 +2235,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       };
       xhr.onerror = () => {
         finalize();
-        if (stopRequested || finished) return;
+        if (stopRequested || finished || restoringState) return;
         if (retryCount < maxRetriesPerPage) {
           const delay = 1000 * (retryCount + 1);
           addLog(`Eroare de rețea la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
@@ -1594,6 +2247,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       xhr.send();
     }
 
-    fetchPage(config.startPage, 0);
+    if (pendingRestore) {
+      restoreFromSavedState(pendingRestore, restoreMode);
+      pendingRestore = null;
+      restoreMode = null;
+      if (!finished && !stopRequested && !paused) {
+        for (let i = 0; i < config.concurrency; i++) schedule(kick);
+      }
+    } else {
+      fetchPage(config.startPage, 0);
+    }
   })();
 }

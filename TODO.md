@@ -33,9 +33,14 @@
 - [x] Add a pause/resume toggle (keep scan state)
 - [x] Use `PBINFO_GET_UNSOLVED_MAX_PAGES` as a fallback termination cap
 - [x] Add extra clipboard formats (IDs / Markdown list)
-- [ ] Persist scan state to `localStorage` for reload-resume
+- [x] Persist scan state to `localStorage` for reload-resume
 - [x] Add better table styling (sticky header, row hover)
 - [x] Add dark mode styling for the generated report
-- [ ] Add theme toggle (system/light/dark)
+- [x] Add theme toggle (system/light/dark)
 - [x] Add a small changelog section in README
 - [x] Add GitHub Actions to run tests on PRs
+- [ ] Add throttled live rendering during scan (optional)
+- [ ] Store and select from multiple saved states (per link)
+- [ ] Add unit tests for state snapshot serialization/restore
+- [ ] Add non-destructive overlay UI mode (avoid wiping page)
+- [ ] Add fuzz tests for score parsing / HTML variations
