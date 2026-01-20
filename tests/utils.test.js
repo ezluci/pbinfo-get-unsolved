@@ -6,6 +6,8 @@ const {
   buildPageUrl,
   problemsToCsv,
   problemsToLinksText,
+  problemsToIdsText,
+  problemsToMarkdownText,
 } = require('../pbinfo-get-unsolved-enhanced.js');
 
 test('normalizeListUrl: strips pagination param', () => {
@@ -68,4 +70,16 @@ test('problemsToLinksText: joins links by newline', () => {
     { link: 'https://www.pbinfo.ro/probleme/2/b' },
   ]);
   assert.equal(text, 'https://www.pbinfo.ro/probleme/1/a\nhttps://www.pbinfo.ro/probleme/2/b');
+});
+
+test('problemsToIdsText: joins ids by newline', () => {
+  const text = problemsToIdsText([{ id: 1 }, { id: 2 }]);
+  assert.equal(text, '1\n2');
+});
+
+test('problemsToMarkdownText: returns a markdown list', () => {
+  const text = problemsToMarkdownText([
+    { id: 1, name: 'Test [x]', link: 'https://www.pbinfo.ro/probleme/1/test' },
+  ]);
+  assert.equal(text, '- [#1 - Test \\[x\\]](<https://www.pbinfo.ro/probleme/1/test>)');
 });

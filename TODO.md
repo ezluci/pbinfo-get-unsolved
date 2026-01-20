@@ -29,9 +29,10 @@
 - [x] Add a “copy links to clipboard” button
 - [x] Add a “resume from page N” option
 - [x] Add a “stop scan” button during long runs
-- [ ] Add a pause/resume toggle (keep scan state)
-- [ ] Use `PBINFO_GET_UNSOLVED_MAX_PAGES` as a fallback termination cap
-- [ ] Add extra clipboard formats (IDs / Markdown list)
+- [x] Add a pause/resume toggle (keep scan state)
+- [x] Use `PBINFO_GET_UNSOLVED_MAX_PAGES` as a fallback termination cap
+- [x] Add extra clipboard formats (IDs / Markdown list)
+- [ ] Persist scan state to `localStorage` for reload-resume
 - [x] Add better table styling (sticky header, row hover)
 - [x] Add dark mode styling for the generated report
 - [ ] Add theme toggle (system/light/dark)

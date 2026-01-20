@@ -244,6 +244,32 @@ function problemsToLinksText(problems) {
     .join('\n');
 }
 
+function problemsToIdsText(problems) {
+  return (Array.isArray(problems) ? problems : [])
+    .map((p) => (p && Number.isFinite(p.id) ? String(p.id) : ''))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function escapeMarkdownLinkText(text) {
+  const t = normalizeSpace(text);
+  return t.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]');
+}
+
+function problemsToMarkdownText(problems) {
+  return (Array.isArray(problems) ? problems : [])
+    .map((p) => {
+      const id = Number.isFinite(p?.id) ? p.id : null;
+      const name = escapeMarkdownLinkText(p?.name || '');
+      const link = typeof p?.link === 'string' ? p.link.trim() : '';
+      if (!link) return '';
+      const label = id != null ? `#${id} - ${name}` : name;
+      return `- [${label}](<${link}>)`;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
 if (typeof window === 'undefined' || typeof document === 'undefined') {
   if (typeof module !== 'undefined') {
     module.exports = {
@@ -260,6 +286,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       buildPageUrl,
       problemsToCsv,
       problemsToLinksText,
+      problemsToIdsText,
+      problemsToMarkdownText,
     };
   }
 } else {
@@ -468,7 +496,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     const stats = { solved: 0, tried: 0, unattempted: 0, total: 0, pages: 0 };
     let finished = false;
     let stopRequested = false;
+    let paused = false;
     let stopButton = null;
+    let pauseButton = null;
     const activeRequests = new Set();
 
     const debugEnabled = Boolean(window.PBINFO_GET_UNSOLVED_DEBUG);
@@ -699,6 +729,11 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     function stopScan(reason) {
       if (finished) return;
       stopRequested = true;
+      paused = false;
+      if (pauseButton) {
+        pauseButton.disabled = true;
+        pauseButton.textContent = 'Pauză';
+      }
       if (stopButton) {
         stopButton.disabled = true;
         stopButton.textContent = 'Oprit';
@@ -710,6 +745,17 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         } catch {}
       }
       finishScan({ complete: false, reason: reason || 'Oprit de utilizator' });
+    }
+
+    function togglePause() {
+      if (finished || stopRequested) return;
+      paused = !paused;
+      if (pauseButton) pauseButton.textContent = paused ? 'Continuă' : 'Pauză';
+      addLog(paused ? '<b>Scanare pusă pe pauză.</b>' : '<b>Scanare reluată.</b>');
+      updateProgress(inFlight);
+      if (!paused) {
+        for (let i = 0; i < config.concurrency; i++) schedule(kick);
+      }
     }
 
     function setupControls() {
@@ -838,9 +884,52 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       });
       groupExport.appendChild(copyLinks);
 
+      const copyIds = document.createElement('button');
+      copyIds.textContent = 'Copiază ID-uri';
+      copyIds.addEventListener('click', async () => {
+        const visible = getVisibleProblems();
+        const text = problemsToIdsText(visible);
+        if (!text) {
+          addLog('Nimic de copiat.');
+          return;
+        }
+        try {
+          await copyTextToClipboard(text);
+          addLog(`Am copiat ${visible.length} ID-uri în clipboard.`);
+        } catch (err) {
+          addLog('<span style="color:#b30000;">Nu am putut copia ID-urile în clipboard.</span>');
+          console.error(err);
+        }
+      });
+      groupExport.appendChild(copyIds);
+
+      const copyMarkdown = document.createElement('button');
+      copyMarkdown.textContent = 'Copiază Markdown';
+      copyMarkdown.addEventListener('click', async () => {
+        const visible = getVisibleProblems();
+        const text = problemsToMarkdownText(visible);
+        if (!text) {
+          addLog('Nimic de copiat.');
+          return;
+        }
+        try {
+          await copyTextToClipboard(text);
+          addLog(`Am copiat ${visible.length} rânduri Markdown în clipboard.`);
+        } catch (err) {
+          addLog('<span style="color:#b30000;">Nu am putut copia Markdown în clipboard.</span>');
+          console.error(err);
+        }
+      });
+      groupExport.appendChild(copyMarkdown);
+
       const groupScan = document.createElement('div');
       groupScan.className = 'group';
       groupScan.innerHTML = '<b>Scan</b>';
+
+      pauseButton = document.createElement('button');
+      pauseButton.textContent = 'Pauză';
+      pauseButton.addEventListener('click', togglePause);
+      groupScan.appendChild(pauseButton);
 
       stopButton = document.createElement('button');
       stopButton.textContent = 'Stop scan';
@@ -849,7 +938,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
       const scanNote = document.createElement('div');
       scanNote.className = 'muted';
-      scanNote.textContent = `resume: re-rulează scriptul cu start page > 1 (curent ${config.startPage})`;
+      scanNote.textContent = `resume: start page > 1 (curent ${config.startPage}) · maxPages=${config.maxPages}`;
       groupScan.appendChild(scanNote);
 
       controlsDiv.replaceChildren(groupStatus, groupScore, groupExport, groupScan);
@@ -876,10 +965,11 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       const etaMs =
         Number.isFinite(totalPages) && speed > 0 ? ((totalPages - pagesDone) / speed) * 1000 : null;
       const etaText = etaMs != null ? ` · ETA ~${formatDuration(etaMs)}` : '';
+      const pauseText = paused ? ' · pauză' : '';
       const inflightText = inFlight > 0 ? ` · în lucru ${inFlight}` : '';
       progressDiv.textContent = `Progres: pagini ${pagesText}, probleme ${probsText} · timp ${formatDuration(
         elapsedMs
-      )}${etaText}${inflightText}`;
+      )}${etaText}${pauseText}${inflightText}`;
     }
 
     setupControls();
@@ -961,6 +1051,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     function finishScan({ complete, reason }) {
       if (finished) return;
       finished = true;
+      if (pauseButton) pauseButton.disabled = true;
       if (stopButton) stopButton.disabled = true;
 
       document.body.appendChild(table);
@@ -987,12 +1078,59 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     // Fetch pages (optional concurrency)
     const maxRetriesPerPage = config.maxRetriesPerPage;
     const pageQueue = [];
+    const deferredPageRequests = new Map();
+    let nextSequentialPage = null;
     let queueInitialized = false;
     let inFlight = 0;
 
     function schedule(fn) {
       if (config.delayMs > 0) setTimeout(fn, config.delayMs);
       else fn();
+    }
+
+    function deferPage(pageIndex, retryCount) {
+      if (!Number.isFinite(pageIndex)) return;
+      const idx = Math.trunc(pageIndex);
+      const existing = deferredPageRequests.get(idx);
+      const rc = Math.max(0, Number.isFinite(retryCount) ? Math.trunc(retryCount) : 0);
+      if (existing == null || rc > existing) deferredPageRequests.set(idx, rc);
+    }
+
+    function takeDeferred() {
+      if (deferredPageRequests.size === 0) return null;
+      let bestPage = null;
+      let bestRetry = 0;
+      for (const [pageIndex, retryCount] of deferredPageRequests.entries()) {
+        if (bestPage == null || pageIndex < bestPage) {
+          bestPage = pageIndex;
+          bestRetry = retryCount;
+        }
+      }
+      if (bestPage == null) return null;
+      deferredPageRequests.delete(bestPage);
+      return { pageIndex: bestPage, retryCount: bestRetry };
+    }
+
+    function kick() {
+      if (finished || paused) return;
+      if (inFlight >= config.concurrency) return;
+
+      const deferred = takeDeferred();
+      if (deferred) {
+        fetchPage(deferred.pageIndex, deferred.retryCount);
+        return;
+      }
+
+      if (queueInitialized) {
+        fetchNext();
+        return;
+      }
+
+      if (nextSequentialPage != null) {
+        const p = nextSequentialPage;
+        nextSequentialPage = null;
+        fetchPage(p, 0);
+      }
     }
 
     function maybeFinish() {
@@ -1003,7 +1141,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     }
 
     function fetchNext() {
-      if (finished) return;
+      if (finished || paused) return;
+      if (inFlight >= config.concurrency) return;
       const next = pageQueue.shift();
       if (next == null) {
         maybeFinish();
@@ -1016,15 +1155,41 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       if (queueInitialized) return;
       if (!Number.isFinite(totalPages)) return;
       const startAt = Math.max(1, Number.isFinite(config.startPage) ? config.startPage : 1);
-      for (let i = startAt + 1; i <= totalPages; i++) pageQueue.push(i);
+      const cap = Number.isFinite(config.maxPages) ? config.maxPages : null;
+      const cappedTotalPages = cap != null ? Math.min(totalPages, cap) : totalPages;
+      if (cappedTotalPages < totalPages) {
+        addLog(
+          `<span style="color:#b35c00;"><b>Atenție:</b> totalPages=${totalPages} depășește maxPages=${cap}. Voi scana doar primele ${cappedTotalPages} pagini.</span>`
+        );
+        totalPages = cappedTotalPages;
+      }
+
+      for (let i = startAt + 1; i <= cappedTotalPages; i++) pageQueue.push(i);
       queueInitialized = true;
-      const pagesToScan = Math.max(0, totalPages - startAt + 1);
+      const pagesToScan = Math.max(0, cappedTotalPages - startAt + 1);
       const extraWorkers = Math.max(0, Math.min(config.concurrency, pagesToScan) - 1);
-      for (let i = 0; i < extraWorkers; i++) fetchNext();
+      for (let i = 0; i < extraWorkers; i++) kick();
     }
 
     function fetchPage(pageIndex, retryCount = 0) {
-      if (finished) return;
+      if (finished || stopRequested) return;
+      if (paused) {
+        deferPage(pageIndex, retryCount);
+        return;
+      }
+      if (Number.isFinite(config.maxPages) && pageIndex > config.maxPages) {
+        pageQueue.length = 0;
+        deferredPageRequests.clear();
+        finishScan({
+          complete: false,
+          reason: `Limita maxPages=${config.maxPages} a fost atinsă (pagina ${pageIndex}).`,
+        });
+        return;
+      }
+      if (inFlight >= config.concurrency) {
+        deferPage(pageIndex, retryCount);
+        return;
+      }
       inFlight++;
       updateProgress(inFlight);
       const xhr = new XMLHttpRequest();
@@ -1258,10 +1423,11 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
         finalize();
         if (queueInitialized) {
-          schedule(fetchNext);
+          schedule(kick);
           return;
         }
-        schedule(() => fetchPage(pageIndex + 1, 0));
+        nextSequentialPage = pageIndex + 1;
+        schedule(kick);
       };
       xhr.onabort = () => {
         finalize();

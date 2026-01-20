@@ -17,10 +17,10 @@ După scanare:
 
 - Folosește controalele de filtrare (stare + punctaj) pentru a restrânge lista.
 - Folosește butoanele de export pentru a salva rezultatele în CSV/JSON.
-- Poți copia rapid link-urile (lista filtrată) în clipboard.
+- Poți copia rapid (lista filtrată) în clipboard: link-uri / ID-uri / Markdown.
 - Tabelul are header sticky + highlight la hover și se adaptează automat la dark mode (tema browser-ului).
 
-În timpul scanării poți opri rularea din butonul **Stop scan** (rezultatele parțiale rămân afișate).
+În timpul scanării poți opri rularea din butonul **Stop scan** sau o poți pune pe pauză (**Pauză/Continuă**); rezultatele parțiale rămân afișate.
 
 ## Config (opțional)
 
@@ -33,6 +33,7 @@ window.PBINFO_GET_UNSOLVED_DELAY_MS = 150; // delay între request-uri (ms), def
 window.PBINFO_GET_UNSOLVED_TIMEOUT_MS = 30000; // default 30000
 window.PBINFO_GET_UNSOLVED_MAX_RETRIES = 3; // default 3
 window.PBINFO_GET_UNSOLVED_START_PAGE = 1; // default 1 (resume: > 1)
+window.PBINFO_GET_UNSOLVED_MAX_PAGES = 5000; // fallback cap (dacă pbinfo nu mai raportează totalul corect)
 
 // paginare (în caz că pbinfo schimbă parametrii)
 window.PBINFO_GET_UNSOLVED_PAGE_SIZE = 10; // default auto
