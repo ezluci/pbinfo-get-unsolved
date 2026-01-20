@@ -357,19 +357,54 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     const style = document.createElement('style');
     style.innerHTML = `
-        :root { font-family: Arial, sans-serif; }
-        a:hover{cursor:pointer;}
-        td{border:1px solid black;padding:0.25em 0.4em;vertical-align:top;}
-        table{border-collapse:collapse;}
+        :root{
+            font-family: Arial, sans-serif;
+            --bg: #ffffff;
+            --text: #111827;
+            --muted: #6b7280;
+            --border: #d1d5db;
+            --panel: #f9fafb;
+            --btn-hover: #eef2ff;
+            --table-header-bg: #f3f4f6;
+            --table-row-alt: #fafafa;
+            --table-row-hover: #eef2ff;
+            --link: #1d4ed8;
+        }
+        @media (prefers-color-scheme: dark){
+            :root{
+                --bg: #0b0f14;
+                --text: #e5e7eb;
+                --muted: #9ca3af;
+                --border: #243041;
+                --panel: #121826;
+                --btn-hover: #1b2a44;
+                --table-header-bg: #121826;
+                --table-row-alt: #0f1522;
+                --table-row-hover: #1b2a44;
+                --link: #93c5fd;
+            }
+        }
+        body{margin:0;padding:0.9rem;background:var(--bg);color:var(--text);}
+        a{color:var(--link);text-decoration:none;}
+        a:hover{cursor:pointer;text-decoration:underline;}
+        #log span{line-height:1.35;}
         #controls{margin:0.75em 0 0.5em;display:flex;flex-wrap:wrap;gap:0.75em;align-items:flex-end;}
-        #controls .group{display:flex;flex-direction:column;gap:0.25em;min-width:12em;}
+        #controls .group{display:flex;flex-direction:column;gap:0.25em;min-width:12em;padding:0.5em;border:1px solid var(--border);border-radius:0.5em;background:var(--panel);}
         #controls label{display:flex;gap:0.4em;align-items:center;user-select:none;}
         #controls input[type="number"]{width:8em;}
-        #controls button{padding:0.3em 0.6em;}
-        #progress{margin:0.4em 0 0.2em;color:#444;}
-        #summary{margin:0.5em 0;color:#333;}
+        #controls button{padding:0.35em 0.65em;border:1px solid var(--border);border-radius:0.45em;background:transparent;color:var(--text);}
+        #controls button:hover{background:var(--btn-hover);}
+        #controls button:disabled{opacity:0.55;cursor:not-allowed;}
+        #progress{margin:0.4em 0 0.2em;color:var(--muted);}
+        #summary{margin:0.5em 0;color:var(--text);}
         .pill{display:inline-block;padding:0.1em 0.4em;border-radius:0.4em;color:white;}
-        .muted{color:#666;}
+        .muted{color:var(--muted);}
+        table{border-collapse:collapse;margin-top:0.75em;}
+        th,td{border:1px solid var(--border);padding:0.25em 0.4em;vertical-align:top;}
+        thead th{position:sticky;top:0;background:var(--table-header-bg);z-index:2;}
+        thead th a{display:inline-flex;gap:0.25em;align-items:center;}
+        tbody tr:nth-child(even){background:var(--table-row-alt);}
+        tbody tr:hover{background:var(--table-row-hover);}
     `;
     document.head.appendChild(style);
 
@@ -824,28 +859,53 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             if (s === 'tried') return 'f0ad4e';
             return '6c757d';
         }
-        table.innerHTML = `<tr style="font-weight:bold;">
-            <td style="min-width:5em;user-select:none;"><a onclick="sortTable('cnt')">Contor ${sortSymbol('cnt')}</a></td>
-            <td style="min-width:10em;user-select:none;"><a onclick="sortTable('id')">Nume ${sortSymbol('id')}</a></td>
-            <td style="min-width:5em;user-select:none;"><a onclick="sortTable('score')">Punctaj ${sortSymbol('score')}</a></td>
-            <td style="min-width:7.5em;user-select:none;"><a onclick="sortTable('status')">Stare ${sortSymbol('status')}</a></td>
-            <td style="min-width:6.5em;user-select:none;"><a onclick="sortTable('difficulty')">Dificultate ${sortSymbol('difficulty')}</a></td>
-            <td style="min-width:13em;user-select:none;"><a onclick="sortTable('postedBy_name')">Postată de ${sortSymbol('postedBy_name')}</a></td>
-            <td style="min-width:10em;user-select:none;"><a onclick="sortTable('author')">Autor ${sortSymbol('author')}</a></td>
-            <td style="min-width:10em;user-select:none;"><a onclick="sortTable('source')">Sursa problemei ${sortSymbol('source')}</a></td>
-        </tr>`;
+
+        table.replaceChildren();
+        const thead = document.createElement('thead');
+        const tbody = document.createElement('tbody');
+        table.appendChild(thead);
+        table.appendChild(tbody);
+
+        const headerDefs = [
+            { key: 'cnt', label: 'Contor', minWidth: '5em' },
+            { key: 'id', label: 'Nume', minWidth: '10em' },
+            { key: 'score', label: 'Punctaj', minWidth: '5em' },
+            { key: 'status', label: 'Stare', minWidth: '7.5em' },
+            { key: 'difficulty', label: 'Dificultate', minWidth: '6.5em' },
+            { key: 'postedBy_name', label: 'Postată de', minWidth: '13em' },
+            { key: 'author', label: 'Autor', minWidth: '10em' },
+            { key: 'source', label: 'Sursa problemei', minWidth: '10em' },
+        ];
+
+        const headRow = document.createElement('tr');
+        for (const h of headerDefs) {
+            const th = document.createElement('th');
+            th.style.minWidth = h.minWidth;
+            th.style.userSelect = 'none';
+            const a = document.createElement('a');
+            a.href = '#';
+            a.innerHTML = `${h.label} ${sortSymbol(h.key)}`;
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                sortTable(h.key);
+            });
+            th.appendChild(a);
+            headRow.appendChild(th);
+        }
+        thead.appendChild(headRow);
+
         const list = Array.isArray(visibleProblems) ? visibleProblems : getVisibleProblems();
         list.forEach((p, i) => {
             const row = document.createElement('tr');
             row.innerHTML = `<td>${i + 1}.</td>
-                <td><a href="${p.link}" target="_blank">#${p.id} - ${p.name}</a></td>
+                <td><a href="${p.link}" target="_blank" rel="noopener noreferrer">#${p.id} - ${p.name}</a></td>
                 <td>${p.userScore != null && Number.isFinite(p.userScore) ? `${p.userScore}p` : '-'}</td>
                 <td><span class="pill" style="background-color:#${statusColor(p.status)};">${statusLabel(p.status)}</span></td>
                 <td><span class="pill" style="background-color:#${difficultyColor(p.difficulty)};">${numberToDifficulty(p.difficulty)}</span></td>
-                <td>${p.postedBy_link ? `<a target="_blank" href="${p.postedBy_link}"><img style="vertical-align:middle;width:1.1em;" src="${p.postedBy_img}"> ${p.postedBy_name}</a>` : ''}</td>
+                <td>${p.postedBy_link ? `<a target="_blank" rel="noopener noreferrer" href="${p.postedBy_link}"><img style="vertical-align:middle;width:1.1em;" src="${p.postedBy_img}"> ${p.postedBy_name}</a>` : ''}</td>
                 <td>${p.author}</td>
                 <td>${p.source}</td>`;
-            table.appendChild(row);
+            tbody.appendChild(row);
         });
     }
 

@@ -29,7 +29,8 @@
 - [ ] Add a pause/resume toggle (keep scan state)
 - [ ] Use `PBINFO_GET_UNSOLVED_MAX_PAGES` as a fallback termination cap
 - [ ] Add extra clipboard formats (IDs / Markdown list)
-- [ ] Add better table styling (sticky header, row hover)
-- [ ] Add dark mode styling for the generated report
+- [x] Add better table styling (sticky header, row hover)
+- [x] Add dark mode styling for the generated report
+- [ ] Add theme toggle (system/light/dark)
 - [ ] Add a small changelog section in README
 - [ ] Add GitHub Actions to run tests on PRs

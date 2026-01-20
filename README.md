@@ -17,6 +17,7 @@ După scanare:
 - Folosește controalele de filtrare (stare + punctaj) pentru a restrânge lista.
 - Folosește butoanele de export pentru a salva rezultatele în CSV/JSON.
 - Poți copia rapid link-urile (lista filtrată) în clipboard.
+- Tabelul are header sticky + highlight la hover și se adaptează automat la dark mode (tema browser-ului).
 
 În timpul scanării poți opri rularea din butonul **Stop scan** (rezultatele parțiale rămân afișate).
 
