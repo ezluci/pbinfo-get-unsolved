@@ -23,9 +23,9 @@
 - [x] Add ESLint + formatting to keep style consistent
 
 ## Low priority
-- [ ] Add a “copy links to clipboard” button
-- [ ] Add a “resume from page N” option
-- [ ] Add a “stop scan” button during long runs
+- [x] Add a “copy links to clipboard” button
+- [x] Add a “resume from page N” option
+- [x] Add a “stop scan” button during long runs
 - [ ] Add better table styling (sticky header, row hover)
 - [ ] Add dark mode styling for the generated report
 - [ ] Add a small changelog section in README

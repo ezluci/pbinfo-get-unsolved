@@ -1,7 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { normalizeListUrl, buildPageUrl, problemsToCsv } = require('../pbinfo-get-unsolved-enhanced.js');
+const {
+  normalizeListUrl,
+  buildPageUrl,
+  problemsToCsv,
+  problemsToLinksText,
+} = require('../pbinfo-get-unsolved-enhanced.js');
 
 test('normalizeListUrl: strips pagination param', () => {
   const url = normalizeListUrl(
@@ -53,3 +58,10 @@ test('problemsToCsv: escapes values and includes BOM', () => {
   assert.ok(csv.includes('"Sursă, cu virgulă"'));
 });
 
+test('problemsToLinksText: joins links by newline', () => {
+  const text = problemsToLinksText([
+    { link: 'https://www.pbinfo.ro/probleme/1/a' },
+    { link: 'https://www.pbinfo.ro/probleme/2/b' },
+  ]);
+  assert.equal(text, 'https://www.pbinfo.ro/probleme/1/a\nhttps://www.pbinfo.ro/probleme/2/b');
+});

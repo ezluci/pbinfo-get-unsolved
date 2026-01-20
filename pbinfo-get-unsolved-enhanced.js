@@ -227,6 +227,13 @@ function problemsToCsv(problems) {
     return `\ufeff${lines.join('\n')}`;
 }
 
+function problemsToLinksText(problems) {
+    return (Array.isArray(problems) ? problems : [])
+        .map(p => (p && typeof p.link === 'string' ? p.link.trim() : ''))
+        .filter(Boolean)
+        .join('\n');
+}
+
 if (typeof window === 'undefined' || typeof document === 'undefined') {
     if (typeof module !== 'undefined') {
         module.exports = {
@@ -242,6 +249,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             normalizeListUrl,
             buildPageUrl,
             problemsToCsv,
+            problemsToLinksText,
         };
     }
 } else {
@@ -288,6 +296,12 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                 ? Number(window.PBINFO_GET_UNSOLVED_MAX_RETRIES)
                 : 3
         ),
+        startPage: Math.max(
+            1,
+            Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_START_PAGE))
+                ? Number(window.PBINFO_GET_UNSOLVED_START_PAGE)
+                : 1
+        ),
         maxPages: Math.max(
             1,
             Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_MAX_PAGES))
@@ -312,6 +326,25 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         console.warn('Link invalid. Scriptul a fost oprit.');
         return;
     }
+
+    let startPageInput = prompt(
+        'De la ce pagină să încep scanarea?\n' +
+            '1 = de la început. Pentru resume, pune un număr mai mare.\n' +
+            'Enter = valoarea default.',
+        String(config.startPage)
+    );
+    if (startPageInput === null) {
+        console.warn('Nu a fost furnizat start page. Scriptul a fost oprit.');
+        return;
+    }
+    startPageInput = normalizeSpace(startPageInput);
+    const startPage = startPageInput === '' ? config.startPage : parseInt(startPageInput, 10);
+    if (!Number.isFinite(startPage) || startPage < 1) {
+        console.warn('Start page invalid. Scriptul a fost oprit.');
+        return;
+    }
+    config.startPage = startPage;
+    const firstFetchedPageIndex = config.startPage;
 
     // wipe the page and setup UI
     document.head.innerHTML = '';
@@ -355,6 +388,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     }
 
     addLog('Link către lista de probleme: <a href="' + pageLink + '"><i>' + pageLink + '</i></a>');
+    addLog(`Start page: <b>${config.startPage}</b>.`);
 
     const progressDiv = document.createElement('div');
     progressDiv.id = 'progress';
@@ -375,6 +409,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     const stats = { solved: 0, tried: 0, unattempted: 0, total: 0, pages: 0 };
     let finished = false;
+    let stopRequested = false;
+    let stopButton = null;
+    const activeRequests = new Set();
 
     const debugEnabled = Boolean(window.PBINFO_GET_UNSOLVED_DEBUG);
     const debugDumpLimit = Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_DEBUG_LIMIT))
@@ -435,6 +472,26 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         if (debugIncludeHtml) {
             console.log('pbinfo-get-unsolved debug card html:', (card.outerHTML || '').slice(0, 5000));
         }
+    }
+
+    async function copyTextToClipboard(text) {
+        const value = String(text || '');
+        if (navigator?.clipboard?.writeText) {
+            await navigator.clipboard.writeText(value);
+            return;
+        }
+        const ta = document.createElement('textarea');
+        ta.value = value;
+        ta.setAttribute('readonly', 'true');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.left = '-1000px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        if (!ok) throw new Error('Clipboard copy failed');
     }
 
     const allProblems = [];
@@ -561,6 +618,22 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
+    function stopScan(reason) {
+        if (finished) return;
+        stopRequested = true;
+        if (stopButton) {
+            stopButton.disabled = true;
+            stopButton.textContent = 'Oprit';
+        }
+        pageQueue.length = 0;
+        for (const xhr of activeRequests) {
+            try {
+                xhr.abort();
+            } catch {}
+        }
+        finishScan({ complete: false, reason: reason || 'Oprit de utilizator' });
+    }
+
     function setupControls() {
         const groupStatus = document.createElement('div');
         groupStatus.className = 'group';
@@ -664,7 +737,40 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         });
         groupExport.appendChild(exportJson);
 
-        controlsDiv.replaceChildren(groupStatus, groupScore, groupExport);
+        const copyLinks = document.createElement('button');
+        copyLinks.textContent = 'Copiază link-uri';
+        copyLinks.addEventListener('click', async () => {
+            const visible = getVisibleProblems();
+            const text = problemsToLinksText(visible);
+            if (!text) {
+                addLog('Nimic de copiat.');
+                return;
+            }
+            try {
+                await copyTextToClipboard(text);
+                addLog(`Am copiat ${visible.length} link-uri în clipboard.`);
+            } catch (err) {
+                addLog('<span style="color:#b30000;">Nu am putut copia link-urile în clipboard.</span>');
+                console.error(err);
+            }
+        });
+        groupExport.appendChild(copyLinks);
+
+        const groupScan = document.createElement('div');
+        groupScan.className = 'group';
+        groupScan.innerHTML = '<b>Scan</b>';
+
+        stopButton = document.createElement('button');
+        stopButton.textContent = 'Stop scan';
+        stopButton.addEventListener('click', () => stopScan('Oprit de utilizator'));
+        groupScan.appendChild(stopButton);
+
+        const scanNote = document.createElement('div');
+        scanNote.className = 'muted';
+        scanNote.textContent = `resume: re-rulează scriptul cu start page > 1 (curent ${config.startPage})`;
+        groupScan.appendChild(scanNote);
+
+        controlsDiv.replaceChildren(groupStatus, groupScore, groupExport, groupScan);
     }
 
     function formatDuration(ms) {
@@ -746,6 +852,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     function finishScan({ complete, reason }) {
         if (finished) return;
         finished = true;
+        if (stopButton) stopButton.disabled = true;
 
         document.body.appendChild(table);
         document.body.appendChild(listDiv);
@@ -795,9 +902,11 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     function initQueueFromTotalPages() {
         if (queueInitialized) return;
         if (!Number.isFinite(totalPages)) return;
-        for (let i = 2; i <= totalPages; i++) pageQueue.push(i);
+        const startAt = Math.max(1, Number.isFinite(config.startPage) ? config.startPage : 1);
+        for (let i = startAt + 1; i <= totalPages; i++) pageQueue.push(i);
         queueInitialized = true;
-        const extraWorkers = Math.max(0, Math.min(config.concurrency, totalPages) - 1);
+        const pagesToScan = Math.max(0, totalPages - startAt + 1);
+        const extraWorkers = Math.max(0, Math.min(config.concurrency, pagesToScan) - 1);
         for (let i = 0; i < extraWorkers; i++) fetchNext();
     }
 
@@ -806,10 +915,12 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         inFlight++;
         updateProgress(inFlight);
         const xhr = new XMLHttpRequest();
+        activeRequests.add(xhr);
         let finalized = false;
         const finalize = () => {
             if (finalized) return;
             finalized = true;
+            activeRequests.delete(xhr);
             inFlight = Math.max(0, inFlight - 1);
             updateProgress(inFlight);
         };
@@ -856,7 +967,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             pageEl.innerHTML = responseText;
             const cards = pageEl.querySelectorAll('div.card.mb-3');
 
-            if (pageIndex === 1) {
+            if (pageIndex === firstFetchedPageIndex) {
                 if (pageSize == null && cards.length > 0) {
                     pageSize = cards.length;
                     addLog(`Page size detectată automat: ${pageSize}.`);
@@ -870,7 +981,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                 }
                 updateProgress(inFlight);
                 if (!queueInitialized && Number.isFinite(totalPages)) {
-                    addLog(`Total detectat: ${totalProblems} probleme · ${totalPages} pagini · pageSize=${pageSize} · concurență=${config.concurrency}.`);
+                    addLog(`Total detectat: ${totalProblems} probleme · ${totalPages} pagini · pageSize=${pageSize} · startPage=${config.startPage} · concurență=${config.concurrency}.`);
                     initQueueFromTotalPages();
                 }
             }
@@ -1008,7 +1119,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             const scoreWarning = scoreUnavailable ? ' (punctaj indisponibil pentru toate)' : '';
             const parseFailSuffix = parseFailCount > 0 ? ` · parseFail=${parseFailCount}` : '';
             addLog(`Pagina ${pageIndex}: rezolvate ${pageSolved}, încercate ${pageTried}, neîncercate ${pageUnattempted} (total ${totalCount})${scoreWarning}${parseFailSuffix}.`);
-            if (pageIndex === 1 && totalCount > 0 && scoreUnavailable) {
+            if (pageIndex === firstFetchedPageIndex && totalCount > 0 && scoreUnavailable) {
                 addLog(`<span style="color:#b35c00;"><b>Atenție:</b> nu pare să fie disponibil punctajul tău pe această listă. Verifică dacă ești autentificat pe pbinfo.ro.</span>`);
             }
 
@@ -1018,6 +1129,11 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                 return;
             }
             schedule(() => fetchPage(pageIndex + 1, 0));
+        };
+        xhr.onabort = () => {
+            finalize();
+            if (stopRequested || finished) return;
+            finishScan({ complete: false, reason: `Request abort la pagina ${pageIndex}` });
         };
         xhr.ontimeout = () => {
             finalize();
@@ -1031,6 +1147,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         };
         xhr.onerror = () => {
             finalize();
+            if (stopRequested || finished) return;
             if (retryCount < maxRetriesPerPage) {
                 const delay = 1000 * (retryCount + 1);
                 addLog(`Eroare de rețea la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
@@ -1042,6 +1159,6 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         xhr.send();
     }
 
-    fetchPage(1, 0);
+    fetchPage(config.startPage, 0);
 })();
 }
