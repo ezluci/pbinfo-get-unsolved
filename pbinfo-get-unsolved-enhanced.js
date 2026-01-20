@@ -4,6 +4,77 @@
 // Use this script in the browser console on pbinfo.ro, providing either a
 // category URL or the global problems list URL when prompted.
 
+function normalizeSpace(str) {
+    return (str || '').toString().replace(/\s+/g, ' ').trim();
+}
+
+function normalizeForMatch(str) {
+    return normalizeSpace(str)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+}
+
+function parseScoreText(text) {
+    const t = normalizeSpace(text);
+    if (!t) return null;
+    const ratio = /(\d{1,3})\s*\/\s*(\d{1,3})/.exec(t);
+    if (ratio) {
+        return { value: parseInt(ratio[1], 10), max: parseInt(ratio[2], 10), hasRatio: true };
+    }
+    const pct = /(\d{1,3})\s*%/.exec(t);
+    if (pct) {
+        return { value: parseInt(pct[1], 10), max: 100, hasRatio: false };
+    }
+    const num = /(\d{1,3})/.exec(t);
+    if (!num) return null;
+    return { value: parseInt(num[1], 10), max: null, hasRatio: false };
+}
+
+function selectScoreFromCandidates(candidates) {
+    const userHints = ['obtinut', 'realizat', 'utilizator', 'user', 'tau'];
+    const maxHints = ['maxim', 'max'];
+
+    const isMaxCand = (c) => maxHints.some(h => normalizeForMatch(c.tooltip).includes(h) || normalizeForMatch(c.text).includes(h));
+    const isUserCand = (c) => userHints.some(h => normalizeForMatch(c.tooltip).includes(h) || normalizeForMatch(c.text).includes(h));
+
+    let maxScore = null;
+    for (const c of candidates) {
+        if (isMaxCand(c) && Number.isFinite(c.value)) {
+            maxScore = c.value;
+            break;
+        }
+    }
+
+    const nonMaxCandidates = candidates.filter(c => !isMaxCand(c));
+    if (nonMaxCandidates.length === 0) {
+        return { userScore: null, maxScore };
+    }
+
+    const ranked = nonMaxCandidates
+        .map(c => {
+            let rank = 0;
+            if (isUserCand(c)) rank += 100;
+            if (c.hasRatio) rank += 50;
+            if (c.isLink) rank += 10;
+            return { c, rank };
+        })
+        .sort((a, b) => b.rank - a.rank);
+
+    const best = ranked[0]?.c;
+    if (!best || !Number.isFinite(best.value)) {
+        return { userScore: null, maxScore };
+    }
+
+    if (best.max != null && Number.isFinite(best.max)) maxScore = best.max;
+    return { userScore: best.value, maxScore };
+}
+
+if (typeof window === 'undefined' || typeof document === 'undefined') {
+    if (typeof module !== 'undefined') {
+        module.exports = { normalizeSpace, normalizeForMatch, parseScoreText, selectScoreFromCandidates };
+    }
+} else {
 (function () {
     // restore console
     var iFrame = document.createElement('iframe');
@@ -56,6 +127,7 @@
     document.body.appendChild(reqPageEl);
 
     const problems = [];
+    const seenProblemIds = new Set();
     const sorted = { cnt: 1, id: 0, score: 0, difficulty: 0, postedBy_name: 0, author: 0, source: 0 };
     const table = document.createElement('table');
     table.style.width = '75%';
@@ -133,22 +205,104 @@
         });
     }
 
+    const tooltipAttrs = ['title', 'data-bs-title', 'data-bs-original-title', 'data-original-title'];
+    function getTooltipText(el) {
+        for (const attr of tooltipAttrs) {
+            const v = el.getAttribute(attr);
+            if (v) return v;
+        }
+        return '';
+    }
+
+    function extractScoreInfo(card) {
+        const candidates = [];
+
+        const tooltipEls = Array.from(card.querySelectorAll('[title],[data-bs-title],[data-bs-original-title],[data-original-title]'));
+        for (const el of tooltipEls) {
+            const tooltip = normalizeForMatch(getTooltipText(el));
+            if (!tooltip) continue;
+            if (!tooltip.includes('punctaj') && !tooltip.includes('scor') && !tooltip.includes('score')) continue;
+
+            const text = normalizeSpace(el.textContent);
+            const parsed = parseScoreText(text);
+            if (!parsed) continue;
+
+            candidates.push({
+                el,
+                tooltip: getTooltipText(el),
+                text,
+                value: parsed.value,
+                max: parsed.max,
+                hasRatio: parsed.hasRatio,
+                isLink: el.tagName === 'A',
+            });
+        }
+
+        if (candidates.length === 0) {
+            const badgeEls = Array.from(card.querySelectorAll('span.badge, a.badge, div.badge'))
+                .filter(el => !normalizeSpace(el.textContent).startsWith('#'));
+            for (const el of badgeEls) {
+                const text = normalizeSpace(el.textContent);
+                const parsed = parseScoreText(text);
+                if (!parsed) continue;
+                if (!/\bp\b/i.test(text) && !parsed.hasRatio) continue;
+                candidates.push({
+                    el,
+                    tooltip: getTooltipText(el),
+                    text,
+                    value: parsed.value,
+                    max: parsed.max,
+                    hasRatio: parsed.hasRatio,
+                    isLink: el.tagName === 'A',
+                });
+            }
+        }
+
+        return selectScoreFromCandidates(candidates);
+    }
+
     // Fetch pages recursively
-    (function fetchPage(pageIndex) {
+    const maxRetriesPerPage = 3;
+    (function fetchPage(pageIndex, retryCount = 0) {
         const xhr = new XMLHttpRequest();
         const url = pageLink + (pageLink.includes('?') ? '&' : '?') + 'start=' + 10 * (pageIndex - 1);
         xhr.open('GET', url);
-        xhr.setRequestHeader('Content-Type', 'text/plain');
+        xhr.timeout = 30000;
         xhr.onload = () => {
-            reqPageEl.innerHTML = xhr.response;
+            const responseText = xhr.responseText || xhr.response || '';
+            if (xhr.status !== 200) {
+                if (retryCount < maxRetriesPerPage) {
+                    const delay = 1000 * (retryCount + 1);
+                    addLog(`Eroare la pagina ${pageIndex} (status ${xhr.status}). Reîncerc în ${delay / 1000}s...`);
+                    setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
+                    return;
+                }
+                addLog(`Eroare la pagina ${pageIndex} (status ${xhr.status}). Oprire.`);
+                return;
+            }
+
+            if (/invalid request/i.test(responseText)) {
+                if (retryCount < maxRetriesPerPage) {
+                    const delay = 1000 * (retryCount + 1);
+                    addLog(`Serverul a răspuns cu "Invalid request" la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
+                    setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
+                    return;
+                }
+                addLog(`Serverul a răspuns cu "Invalid request" la pagina ${pageIndex}. Oprire.`);
+                return;
+            }
+
+            reqPageEl.innerHTML = responseText;
             const cards = reqPageEl.querySelectorAll('div.card.mb-3');
             let solvedCount = 0;
             let totalCount = 0;
+            let unknownScoreCount = 0;
             for (let card of cards) {
                 const codeEl = card.querySelector('code');
                 if (!codeEl) continue;
                 const id = parseInt(codeEl.innerText.trim().slice(1));
-                if (problems.some(p => p.id === id)) continue;
+                if (seenProblemIds.has(id)) continue;
+                seenProblemIds.add(id);
                 totalCount++;
                 // name and link
                 let name = '';
@@ -192,14 +346,12 @@
                 let source = '';
                 const srcBlock = card.querySelector('blockquote[title="Sursa problemei"]');
                 if (srcBlock) source = srcBlock.innerText.trim();
-                // score
-                let score = 0;
-                const scoreEl = card.querySelector('span[title*="Punctaj"]');
-                if (scoreEl) {
-                    const m = /([0-9]+)/.exec(scoreEl.innerText);
-                    if (m) score = parseInt(m[1]);
-                }
-                if (score === 100) {
+                const { userScore, maxScore } = extractScoreInfo(card);
+                if (userScore == null) unknownScoreCount++;
+                let score = userScore;
+                if (!Number.isFinite(score)) score = 0;
+                const solvedThreshold = Number.isFinite(maxScore) ? maxScore : 100;
+                if (score >= solvedThreshold && userScore != null) {
                     solvedCount++;
                 } else {
                     if (isNaN(score)) score = 0;
@@ -230,10 +382,30 @@
                 addLog(`<u>Am terminat de extras problemele.</u> Sunt ${problems.length} probleme nerezolvate. Tabelul și lista au fost adăugate mai jos.`);
                 return;
             } else {
-                addLog(`Pagina ${pageIndex} are ${solvedCount}/${totalCount} probleme rezolvate.`);
-                fetchPage(pageIndex + 1);
+                const unknownSuffix = unknownScoreCount > 0 ? ` (punctaj indisponibil pentru ${unknownScoreCount})` : '';
+                addLog(`Pagina ${pageIndex} are ${solvedCount}/${totalCount} probleme rezolvate.${unknownSuffix}`);
+                fetchPage(pageIndex + 1, 0);
             }
         };
+        xhr.ontimeout = () => {
+            if (retryCount < maxRetriesPerPage) {
+                const delay = 1000 * (retryCount + 1);
+                addLog(`Timeout la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
+                setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
+                return;
+            }
+            addLog(`Timeout la pagina ${pageIndex}. Oprire.`);
+        };
+        xhr.onerror = () => {
+            if (retryCount < maxRetriesPerPage) {
+                const delay = 1000 * (retryCount + 1);
+                addLog(`Eroare de rețea la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
+                setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
+                return;
+            }
+            addLog(`Eroare de rețea la pagina ${pageIndex}. Oprire.`);
+        };
         xhr.send();
-    })(1);
+    })(1, 0);
 })();
+}
