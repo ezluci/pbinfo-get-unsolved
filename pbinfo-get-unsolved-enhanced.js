@@ -1375,6 +1375,21 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       finishScan({ complete: false, reason: reason || 'Oprit de utilizator' });
     }
 
+    function closeOverlay() {
+      if (!overlayEnabled) return;
+      if (!finished && !stopRequested) {
+        const ok = confirm('Închizi overlay-ul? Scanarea va fi oprită.');
+        if (!ok) return;
+        stopScan('Oprit de utilizator');
+      }
+      try {
+        document.getElementById(UI_ROOT_ID)?.remove();
+      } catch {}
+      try {
+        document.getElementById(UI_STYLE_ID)?.remove();
+      } catch {}
+    }
+
     function togglePause() {
       if (finished || stopRequested) return;
       paused = !paused;
@@ -1770,6 +1785,13 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       stopButton.addEventListener('click', () => stopScan('Oprit de utilizator'));
       groupScan.appendChild(stopButton);
 
+      if (overlayEnabled) {
+        const closeOverlayBtn = document.createElement('button');
+        closeOverlayBtn.textContent = 'Închide overlay';
+        closeOverlayBtn.addEventListener('click', closeOverlay);
+        groupScan.appendChild(closeOverlayBtn);
+      }
+
       const scanNote = document.createElement('div');
       scanNote.className = 'muted';
       scanNote.textContent =
@@ -2037,6 +2059,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     let inFlight = 0;
     let idRangeConsecutiveMissing = 0;
     let idRangeWarnedAboutScore = false;
+    let idRangeWarnedAboutForbidden = false;
     const idRangeLogEvery = Math.max(
       50,
       Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_ID_LOG_EVERY))
@@ -2799,6 +2822,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         return;
       }
 
+      let knownIdRangeScore = null;
       if (scanMode === 'id-range') {
         const prefetch = getIdRangeScorePrefetchState(pageIndex);
         if (prefetch.pending) {
@@ -2806,9 +2830,14 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           return;
         }
         if (prefetch.cached && Number.isFinite(prefetch.cached.value)) {
-          if (processIdRangeFromScoreBatch(pageIndex, prefetch.cached)) {
-            schedule(kick);
-            return;
+          const scoreValue = prefetch.cached.value;
+          if (scoreValue >= 100) {
+            if (processIdRangeFromScoreBatch(pageIndex, prefetch.cached)) {
+              schedule(kick);
+              return;
+            }
+          } else {
+            knownIdRangeScore = scoreValue;
           }
         }
       }
@@ -2911,9 +2940,45 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           stats.forbidden++;
           idRangeConsecutiveMissing = 0;
           maybeAutoSave('id');
-          addLog(
-            `<span style="color:#b35c00;"><b>Atenție:</b> ${unitLabel} a răspuns cu status ${xhr.status} (Acces interzis). Sar peste și continui scanarea.</span>`
-          );
+
+          if (!idRangeWarnedAboutForbidden) {
+            idRangeWarnedAboutForbidden = true;
+            addLog(
+              `<span style="color:#b35c00;"><b>Notă:</b> unele ID-uri răspund cu 401/403 (Acces interzis). Le sar și continui scanarea.</span>`
+            );
+          }
+
+          const scoreValue =
+            knownIdRangeScore != null && Number.isFinite(knownIdRangeScore)
+              ? knownIdRangeScore
+              : null;
+          if (scoreValue != null && !seenProblemIds.has(pageIndex)) {
+            seenProblemIds.add(pageIndex);
+            allProblems.push({
+              cnt: allProblems.length + 1,
+              id: pageIndex,
+              name: '',
+              link: new URL(
+                `/probleme/${pageIndex}`,
+                location?.origin || 'https://www.pbinfo.ro'
+              ).toString(),
+              difficulty: 3,
+              score: scoreValue,
+              scoreKnown: true,
+              userScore: scoreValue,
+              maxScore: 100,
+              status: scoreValue >= 100 ? 'solved' : 'tried',
+              postedBy_link: '',
+              postedBy_name: '',
+              postedBy_img: '',
+              author: '',
+              source: '',
+            });
+            if (scoreValue >= 100) stats.solved++;
+            else stats.tried++;
+            stats.total++;
+          }
+
           finalize();
           schedule(kick);
           return;
@@ -2974,7 +3039,13 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                 ).toString();
 
           const meta = extractProblemMetaFromProblemPage(pageEl, pageIndex);
-          const scoreInfo = extractScoreInfoFromProblemPage(pageEl);
+          const rawScoreInfo = extractScoreInfoFromProblemPage(pageEl);
+          const scoreInfo =
+            knownIdRangeScore != null &&
+            Number.isFinite(knownIdRangeScore) &&
+            (rawScoreInfo.userScore == null || !Number.isFinite(rawScoreInfo.userScore))
+              ? { ...rawScoreInfo, userScore: knownIdRangeScore, maxScore: 100 }
+              : rawScoreInfo;
           const status = classifyProblemStatus(scoreInfo);
 
           if (!pageEl.querySelector('#scor_utilizator_problema') && !idRangeWarnedAboutScore) {

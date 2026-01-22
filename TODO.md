@@ -48,4 +48,4 @@
 - [x] Add unit tests for state snapshot serialization/restore
 - [x] Add non-destructive overlay UI mode (avoid wiping page)
 - [x] Add fuzz tests for score parsing / HTML variations
-- [ ] Add “close overlay” control (when overlay mode enabled)
+- [x] Add “close overlay” control (when overlay mode enabled)
