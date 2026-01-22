@@ -47,7 +47,8 @@ window.PBINFO_GET_UNSOLVED_AUTOSAVE_PAGES = 50; // default 50
 window.PBINFO_GET_UNSOLVED_AUTOSAVE_MS = 120000; // default 120000
 
 // mod scanare
-window.PBINFO_GET_UNSOLVED_MODE = 'list'; // "list" | "id-range"
+window.PBINFO_GET_UNSOLVED_MODE = 'list'; // "list" | "id-range" (default în prompt)
+window.PBINFO_GET_UNSOLVED_MODE_PROMPT = true; // default true; setează false ca să sari peste prompt
 window.PBINFO_GET_UNSOLVED_ID_START = 1; // default 1
 window.PBINFO_GET_UNSOLVED_ID_END = 8000; // default 8000
 window.PBINFO_GET_UNSOLVED_ID_MISSING_STOP = 0; // default 0 (dezactivat)

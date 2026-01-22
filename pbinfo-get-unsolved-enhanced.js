@@ -650,6 +650,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     function normalizeScanMode(value) {
       const v = normalizeForMatch(value || '');
+      if (v === '1') return 'list';
+      if (v === '2') return 'id-range';
       if (v.includes('id')) return 'id-range';
       if (v.includes('range')) return 'id-range';
       if (v.includes('index')) return 'id-range';
@@ -660,21 +662,25 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     const defaultLink = location?.href || '';
     const modeFromWindow = normalizeScanMode(window.PBINFO_GET_UNSOLVED_MODE);
     let scanMode = modeFromWindow;
-    if (!scanMode) {
+    const modePromptDisabled = window.PBINFO_GET_UNSOLVED_MODE_PROMPT === false;
+    if (!modePromptDisabled) {
+      const defaultModePromptValue = modeFromWindow === 'id-range' ? '2' : '1';
       let modeInput = prompt(
         'Mod scanare:\n' +
           '1 = listă (paginare)\n' +
           '2 = interval ID (probleme/ID)\n' +
-          'Enter = 1',
-        '1'
+          `Enter = ${defaultModePromptValue}`,
+        defaultModePromptValue
       );
       if (modeInput === null) {
         console.warn('Nu a fost selectat un mod de scanare. Scriptul a fost oprit.');
         return;
       }
       modeInput = normalizeSpace(modeInput);
-      scanMode = modeInput === '2' ? 'id-range' : 'list';
+      scanMode = normalizeScanMode(modeInput) || (modeInput === '' ? null : 'list');
+      if (!scanMode) scanMode = modeFromWindow || 'list';
     }
+    if (!scanMode) scanMode = 'list';
     config.scanMode = scanMode;
 
     function parseIdRangeInput(value, fallback) {
