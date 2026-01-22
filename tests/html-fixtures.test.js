@@ -63,6 +63,16 @@ test('fixture: ambiguous 100p -> unattempted', () => {
   assert.equal(classifyProblemStatus(info), 'unattempted');
 });
 
+test('fixture: footer score "Punctajul tau maxim" -> solved', () => {
+  const card = parseCard(loadFixture('card-score-footer-user-max.html'));
+  const info = extractScoreInfoFromCard(card);
+  assert.deepEqual(
+    { userScore: info.userScore, maxScore: info.maxScore },
+    { userScore: 100, maxScore: null }
+  );
+  assert.equal(classifyProblemStatus(info), 'solved');
+});
+
 test('fixture: parseTotalProblems', () => {
   const html = loadFixture('list-header-total.html');
   assert.equal(parseTotalProblems(html), 187);

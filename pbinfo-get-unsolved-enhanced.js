@@ -35,24 +35,32 @@ function selectScoreFromCandidates(candidates) {
   const userHints = ['obtinut', 'realizat', 'utilizator', 'user', 'tau'];
   const maxHints = ['maxim', 'max'];
 
-  const isMaxCand = (c) =>
-    maxHints.some(
-      (h) => normalizeForMatch(c.tooltip).includes(h) || normalizeForMatch(c.text).includes(h)
-    );
-  const isUserCand = (c) =>
-    userHints.some(
-      (h) => normalizeForMatch(c.tooltip).includes(h) || normalizeForMatch(c.text).includes(h)
-    );
+  const normTooltip = (c) => normalizeForMatch(c.tooltip);
+  const normText = (c) => normalizeForMatch(c.text);
+  const normAll = (c) => `${normTooltip(c)} ${normText(c)}`;
+
+  const isUserCand = (c) => userHints.some((h) => normAll(c).includes(h));
+
+  // Important: pbinfo sometimes uses "Punctajul tău maxim" to mean the user's best score,
+  // not the maximum possible points. Treat "maxim" as max-points only when it's not in a user context.
+  const isMaxPointsCand = (c) => {
+    if (isUserCand(c)) return false;
+    const all = normAll(c);
+    if (all.includes('punctaj maxim') || all.includes('scor maxim')) return true;
+    const hasMaxHint = maxHints.some((h) => all.includes(h));
+    const hasScoreWord = all.includes('punctaj') || all.includes('scor') || all.includes('score');
+    return hasMaxHint && hasScoreWord;
+  };
 
   let maxScore = null;
   for (const c of candidates) {
-    if (isMaxCand(c) && Number.isFinite(c.value)) {
+    if (isMaxPointsCand(c) && Number.isFinite(c.value)) {
       maxScore = c.value;
       break;
     }
   }
 
-  const nonMaxCandidates = candidates.filter((c) => !isMaxCand(c));
+  const nonMaxCandidates = candidates.filter((c) => !isMaxPointsCand(c));
   if (nonMaxCandidates.length === 0) {
     return { userScore: null, maxScore };
   }
@@ -129,7 +137,17 @@ function buildScoreCandidatesFromCard(card) {
       const text = normalizeSpace(el.textContent);
       const parsed = parseScoreText(text);
       if (!parsed) continue;
-      if (!/\bp\b/i.test(text) && !parsed.hasRatio) continue;
+      const tt = normalizeForMatch(getTooltipText(el));
+      const withinFooter = Boolean(el.closest?.('div.card-footer'));
+      const withinSolveButton = (() => {
+        const btn = el.closest?.('a.btn');
+        if (!btn) return false;
+        const btnText = normalizeForMatch(btn.textContent);
+        return btnText.includes('rezolv');
+      })();
+      const hasScoreTooltip = tt.includes('punctaj') || tt.includes('scor') || tt.includes('score');
+      const looksLikeScoreText = /\bp\b/i.test(text) || parsed.hasRatio;
+      if (!looksLikeScoreText && !hasScoreTooltip && !withinFooter && !withinSolveButton) continue;
       candidates.push({
         el,
         tooltip: getTooltipText(el),
