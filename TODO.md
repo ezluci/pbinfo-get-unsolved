@@ -12,6 +12,9 @@
 - [x] Update README to reference `pbinfo-get-unsolved-enhanced.js` and current workflow
 - [x] Add regression tests for score parsing heuristics
 - [x] Add HTML fixture tests for common pbinfo card layouts
+- [x] Add alternate scan mode by problem ID range (`/probleme/<id>`) to avoid missing items from list filtering
+- [x] Add HTML fixture tests for problem page score cell (`#scor_utilizator_problema`)
+- [ ] Consider batched score fetch for ID scans (`ajx-module/json-probleme-scor.php?ids=...`)
 
 ## Medium priority
 

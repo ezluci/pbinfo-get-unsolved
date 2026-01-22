@@ -169,11 +169,118 @@ function extractScoreInfoFromCard(card) {
   return { userScore, maxScore, candidates };
 }
 
+function extractScoreInfoFromProblemPage(root) {
+  const candidates = [];
+  const cell = root?.querySelector?.('#scor_utilizator_problema');
+  if (!cell) return { userScore: null, maxScore: null, candidates };
+
+  const preferred =
+    cell.querySelector('a.badge, span.badge, a, span, div') || (cell.firstElementChild ?? cell);
+  const text = normalizeSpace(preferred.textContent);
+  const tooltip = getTooltipText(preferred) || getTooltipText(cell);
+  const parsed = parseScoreText(text) || parseScoreText(tooltip);
+  if (parsed) {
+    candidates.push({
+      el: preferred,
+      tooltip,
+      text,
+      value: parsed.value,
+      max: parsed.max,
+      hasRatio: parsed.hasRatio,
+    });
+  }
+
+  const userScore = parsed && Number.isFinite(parsed.value) ? parsed.value : null;
+  const maxScore = parsed && Number.isFinite(parsed.max) ? parsed.max : null;
+  return { userScore, maxScore, candidates };
+}
+
+function extractProblemMetaFromProblemPage(root, problemId) {
+  const meta = {
+    name: '',
+    difficulty: 3,
+    postedBy_link: '',
+    postedBy_name: '',
+    postedBy_img: '',
+    author: '',
+    source: '',
+  };
+
+  const heading = root?.querySelector?.('h1') || root?.querySelector?.('h2');
+  if (heading) {
+    const t = normalizeSpace(heading.textContent);
+    if (t) {
+      const prefixRe = problemId != null ? new RegExp(`^#?\\s*${problemId}\\b\\s*`, 'i') : null;
+      const withoutId = prefixRe ? t.replace(prefixRe, '') : t;
+      meta.name = withoutId.replace(/^[-–—:]\s*/, '').trim();
+    }
+  }
+
+  if (!meta.name) {
+    const ogTitle = root?.querySelector?.('meta[property="og:title"]')?.getAttribute?.('content');
+    const docTitle = root?.querySelector?.('title')?.textContent;
+    const t = normalizeSpace(ogTitle || docTitle);
+    if (t) meta.name = t.replace(/- pbinfo\.ro.*$/i, '').trim();
+  }
+
+  const scoreCell = root?.querySelector?.('#scor_utilizator_problema');
+  const row = scoreCell?.closest?.('tr') || null;
+  const tds = row ? Array.from(row.querySelectorAll('td')) : [];
+  const scoreIdx = scoreCell ? tds.indexOf(scoreCell) : -1;
+
+  const difficultyTd = scoreIdx > 0 ? tds[scoreIdx - 1] : null;
+  if (difficultyTd) {
+    const txt = normalizeForMatch(difficultyTd.textContent);
+    if (txt.includes('uso')) meta.difficulty = 0;
+    else if (txt.includes('med')) meta.difficulty = 1;
+    else if (txt.includes('dific')) meta.difficulty = 2;
+    else if (txt.includes('conc')) meta.difficulty = 3;
+  }
+
+  const authorTd = scoreIdx > 1 ? tds[scoreIdx - 2] : null;
+  if (authorTd) {
+    const a = normalizeSpace(authorTd.textContent);
+    meta.author = a === '-' ? '' : a;
+  }
+
+  const sourceTd = scoreIdx > 2 ? tds[scoreIdx - 3] : null;
+  if (sourceTd) {
+    const s = normalizeSpace(sourceTd.textContent);
+    meta.source = s === '-' ? '' : s;
+  }
+
+  const postedByTd = tds.length > 0 ? tds[0] : null;
+  const pbAnchor = postedByTd?.querySelector?.('a') || null;
+  if (pbAnchor) {
+    meta.postedBy_link = pbAnchor.href || '';
+    meta.postedBy_name = normalizeSpace(pbAnchor.textContent);
+    const img = pbAnchor.querySelector?.('img') || null;
+    if (img?.src) meta.postedBy_img = img.src;
+  }
+
+  return meta;
+}
+
 function classifyProblemStatus(scoreInfo) {
   const maxPoints = Number.isFinite(scoreInfo?.maxScore) ? scoreInfo.maxScore : 100;
   if (scoreInfo?.userScore == null) return 'unattempted';
   if (scoreInfo.userScore >= maxPoints) return 'solved';
   return 'tried';
+}
+
+function isLikelyPbinfoNotFoundHtml(html) {
+  const t = normalizeForMatch(String(html || ''));
+  return t.includes('pagina nu exista') || t.includes('pagina nu există') || t.includes(' 404 ');
+}
+
+function isLikelyPbinfoBlockedHtml(html) {
+  const t = String(html || '');
+  return (
+    /cdn-cgi\/challenge-platform/i.test(t) ||
+    /cf-chl/i.test(t) ||
+    /attention required/i.test(t) ||
+    /security check/i.test(t)
+  );
 }
 
 function parseTotalProblems(html) {
@@ -298,6 +405,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       getTooltipText,
       buildScoreCandidatesFromCard,
       extractScoreInfoFromCard,
+      extractScoreInfoFromProblemPage,
+      extractProblemMetaFromProblemPage,
       classifyProblemStatus,
       parseTotalProblems,
       normalizeListUrl,
@@ -306,6 +415,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       problemsToLinksText,
       problemsToIdsText,
       problemsToMarkdownText,
+      isLikelyPbinfoNotFoundHtml,
+      isLikelyPbinfoBlockedHtml,
     };
   }
 } else {
@@ -377,6 +488,21 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     }
 
     const config = {
+      scanMode: 'list',
+      idRange: {
+        startId: Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_ID_START))
+          ? Number(window.PBINFO_GET_UNSOLVED_ID_START)
+          : 1,
+        endId: Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_ID_END))
+          ? Number(window.PBINFO_GET_UNSOLVED_ID_END)
+          : 8000,
+        stopAfterMissing: Math.max(
+          0,
+          Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_ID_MISSING_STOP))
+            ? Number(window.PBINFO_GET_UNSOLVED_ID_MISSING_STOP)
+            : 0
+        ),
+      },
       pagination: {
         mode: window.PBINFO_GET_UNSOLVED_PAGINATION_MODE || 'offset',
         param: window.PBINFO_GET_UNSOLVED_PAGE_PARAM || 'start',
@@ -425,25 +551,97 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       ),
     };
 
-    const defaultLink = location?.href || '';
-    let pageLinkInput = prompt(
-      'Pune un link către lista de probleme de unde vrei să obții problemele nerezolvate.\n' +
-        'Enter = pagina curentă. Dacă folosești filtre, copiază link-ul din bara de adrese.',
-      defaultLink
-    );
-    if (pageLinkInput === null) {
-      console.warn('Nu a fost furnizat niciun link. Scriptul a fost oprit.');
-      return;
+    function normalizeScanMode(value) {
+      const v = normalizeForMatch(value || '');
+      if (v.includes('id')) return 'id-range';
+      if (v.includes('range')) return 'id-range';
+      if (v.includes('index')) return 'id-range';
+      if (v.includes('list')) return 'list';
+      return null;
     }
-    pageLinkInput = normalizeSpace(pageLinkInput);
-    const pageLink = normalizeListUrl(
-      pageLinkInput || defaultLink,
-      defaultLink,
-      config.pagination.param
-    );
-    if (!pageLink) {
-      console.warn('Link invalid. Scriptul a fost oprit.');
-      return;
+
+    const defaultLink = location?.href || '';
+    const modeFromWindow = normalizeScanMode(window.PBINFO_GET_UNSOLVED_MODE);
+    let scanMode = modeFromWindow;
+    if (!scanMode) {
+      let modeInput = prompt(
+        'Mod scanare:\n' +
+          '1 = listă (paginare)\n' +
+          '2 = interval ID (probleme/ID)\n' +
+          'Enter = 1',
+        '1'
+      );
+      if (modeInput === null) {
+        console.warn('Nu a fost selectat un mod de scanare. Scriptul a fost oprit.');
+        return;
+      }
+      modeInput = normalizeSpace(modeInput);
+      scanMode = modeInput === '2' ? 'id-range' : 'list';
+    }
+    config.scanMode = scanMode;
+
+    function parseIdRangeInput(value, fallback) {
+      const raw = normalizeSpace(value);
+      const fb = normalizeSpace(fallback);
+      const t = raw || fb;
+      if (!t) return null;
+      const m = /^(\d+)\s*-\s*(\d+)$/.exec(t);
+      if (m) {
+        const startId = parseInt(m[1], 10);
+        const endId = parseInt(m[2], 10);
+        if (!Number.isFinite(startId) || !Number.isFinite(endId) || startId < 1 || endId < 1)
+          return null;
+        return { startId, endId };
+      }
+      const n = parseInt(t, 10);
+      if (!Number.isFinite(n) || n < 1) return null;
+      return { startId: 1, endId: n };
+    }
+
+    let pageLink = null;
+
+    if (scanMode === 'id-range') {
+      const defaultRange = `${config.idRange.startId}-${config.idRange.endId}`;
+      let idRangeInput = prompt(
+        'Interval ID de scanat (ex: 1-8000).\n' +
+          'Notă: scanarea pe ID-uri este mai lentă și poate necesita delay/concurență mică.',
+        defaultRange
+      );
+      if (idRangeInput === null) {
+        console.warn('Nu a fost furnizat intervalul ID. Scriptul a fost oprit.');
+        return;
+      }
+      const range = parseIdRangeInput(idRangeInput, defaultRange);
+      if (!range) {
+        console.warn('Interval ID invalid. Scriptul a fost oprit.');
+        return;
+      }
+      const startId = Math.min(range.startId, range.endId);
+      const endId = Math.max(range.startId, range.endId);
+      config.idRange.startId = startId;
+      config.idRange.endId = endId;
+      pageLink = `id-range:${location?.origin || 'https://www.pbinfo.ro'}:${startId}-${endId}`;
+      config.startPage = startId;
+    } else {
+      let pageLinkInput = prompt(
+        'Pune un link către lista de probleme de unde vrei să obții problemele nerezolvate.\n' +
+          'Enter = pagina curentă. Dacă folosești filtre, copiază link-ul din bara de adrese.',
+        defaultLink
+      );
+      if (pageLinkInput === null) {
+        console.warn('Nu a fost furnizat niciun link. Scriptul a fost oprit.');
+        return;
+      }
+      pageLinkInput = normalizeSpace(pageLinkInput);
+      pageLink = normalizeListUrl(
+        pageLinkInput || defaultLink,
+        defaultLink,
+        config.pagination.param
+      );
+      if (!pageLink) {
+        console.warn('Link invalid. Scriptul a fost oprit.');
+        return;
+      }
     }
 
     const stateKeys = makeStateKeys(pageLink);
@@ -482,10 +680,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           : null;
       const kind = savedFull ? 'full' : 'minimal';
       const note = kind === 'minimal' ? ' (doar progres, fără lista completă)' : '';
+      const unitLabel = scanMode === 'id-range' ? 'ID-uri scanate' : 'Pagini scanate';
+      const headLine =
+        scanMode === 'id-range'
+          ? `Am găsit un scan salvat pentru acest interval${note}.\n`
+          : `Am găsit un scan salvat pentru acest link${note}.\n`;
       const ok = confirm(
-        `Am găsit un scan salvat pentru acest link${note}.\n` +
+        headLine +
           `Salvat la: ${savedAt}\n` +
-          `${pages != null ? `Pagini scanate: ${pages}\n` : ''}` +
+          `${pages != null ? `${unitLabel}: ${pages}\n` : ''}` +
           `${problems != null ? `Probleme scanate: ${problems}\n` : ''}` +
           `\nOK = încarcă, Cancel = ignoră`
       );
@@ -505,20 +708,28 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     }
 
     if (pendingRestore == null) {
-      let startPageInput = prompt(
-        'De la ce pagină să încep scanarea?\n' +
-          '1 = de la început. Pentru resume, pune un număr mai mare.\n' +
-          'Enter = valoarea default.',
-        String(config.startPage)
-      );
+      const promptText =
+        scanMode === 'id-range'
+          ? 'De la ce ID să încep scanarea?\n' +
+            `Interval: ${config.idRange.startId}-${config.idRange.endId}\n` +
+            'Pentru resume, pune un număr mai mare.\n' +
+            'Enter = valoarea default.'
+          : 'De la ce pagină să încep scanarea?\n' +
+            '1 = de la început. Pentru resume, pune un număr mai mare.\n' +
+            'Enter = valoarea default.';
+      let startPageInput = prompt(promptText, String(config.startPage));
       if (startPageInput === null) {
-        console.warn('Nu a fost furnizat start page. Scriptul a fost oprit.');
+        console.warn('Nu a fost furnizat start. Scriptul a fost oprit.');
         return;
       }
       startPageInput = normalizeSpace(startPageInput);
       const startPage = startPageInput === '' ? config.startPage : parseInt(startPageInput, 10);
       if (!Number.isFinite(startPage) || startPage < 1) {
-        console.warn('Start page invalid. Scriptul a fost oprit.');
+        console.warn('Start invalid. Scriptul a fost oprit.');
+        return;
+      }
+      if (scanMode === 'id-range' && startPage > config.idRange.endId) {
+        console.warn('Start ID peste capătul intervalului. Scriptul a fost oprit.');
         return;
       }
       config.startPage = startPage;
@@ -628,8 +839,17 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       window.scroll(0, logDiv.scrollHeight);
     }
 
-    addLog('Link către lista de probleme: <a href="' + pageLink + '"><i>' + pageLink + '</i></a>');
-    addLog(`Start page: <b>${config.startPage}</b>.`);
+    if (scanMode === 'id-range') {
+      addLog(
+        `Mod scanare: <b>interval ID</b> (${config.idRange.startId}-${config.idRange.endId}).`
+      );
+      addLog(`Start ID: <b>${config.startPage}</b>.`);
+    } else {
+      addLog(
+        'Link către lista de probleme: <a href="' + pageLink + '"><i>' + pageLink + '</i></a>'
+      );
+      addLog(`Start page: <b>${config.startPage}</b>.`);
+    }
 
     const progressDiv = document.createElement('div');
     progressDiv.id = 'progress';
@@ -645,10 +865,10 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     let pageSize = config.pageSize;
     let totalProblems = null;
-    let totalPages = null;
+    let totalPages = scanMode === 'id-range' ? config.idRange.endId : null;
     let startedAt = Date.now();
 
-    const stats = { solved: 0, tried: 0, unattempted: 0, total: 0, pages: 0 };
+    const stats = { solved: 0, tried: 0, unattempted: 0, total: 0, pages: 0, missing: 0 };
     let finished = false;
     let scanEnd = null;
     let restoringState = false;
@@ -846,7 +1066,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       summaryDiv.appendChild(b);
       summaryDiv.appendChild(
         document.createTextNode(
-          ` scanate=${total} · nerezolvate=${unsolved} · afișate=${shown} · pagini=${stats.pages}`
+          ` scanate=${total} · nerezolvate=${unsolved} · afișate=${shown} · ${scanMode === 'id-range' ? 'ID-uri' : 'pagini'}=${stats.pages}`
         )
       );
     }
@@ -1280,7 +1500,10 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
       const scanNote = document.createElement('div');
       scanNote.className = 'muted';
-      scanNote.textContent = `resume: start page > 1 (curent ${config.startPage}) · maxPages=${config.maxPages}`;
+      scanNote.textContent =
+        scanMode === 'id-range'
+          ? `resume: start ID > ${config.idRange.startId} (curent ${config.startPage}) · interval=${config.idRange.startId}-${config.idRange.endId}`
+          : `resume: start page > 1 (curent ${config.startPage}) · maxPages=${config.maxPages}`;
       groupScan.appendChild(scanNote);
 
       controlsDiv.replaceChildren(
@@ -1306,8 +1529,28 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     function updateProgress(inFlight) {
       const elapsedMs = Date.now() - startedAt;
-      const pagesDone = stats.pages;
       const scanStart = Math.max(1, Number.isFinite(config.startPage) ? config.startPage : 1);
+      const pauseText = paused ? ' · pauză' : '';
+      const inflightText = inFlight > 0 ? ` · în lucru ${inFlight}` : '';
+      const startText = scanStart > 1 ? ` (de la ${scanStart})` : '';
+
+      if (scanMode === 'id-range') {
+        const done = stats.pages;
+        const endId = Number.isFinite(config.idRange.endId) ? config.idRange.endId : null;
+        const totalIds = endId != null ? Math.max(0, endId - scanStart + 1) : null;
+        const idsText = totalIds != null && totalIds > 0 ? `${done}/${totalIds}` : `${done}`;
+        const speed = elapsedMs > 0 ? done / (elapsedMs / 1000) : 0;
+        const etaMs =
+          totalIds != null && totalIds > 0 && speed > 0 ? ((totalIds - done) / speed) * 1000 : null;
+        const etaText = etaMs != null ? ` · ETA ~${formatDuration(etaMs)}` : '';
+        const missingText = stats.missing > 0 ? ` · 404 ${stats.missing}` : '';
+        progressDiv.textContent = `Progres: ID-uri ${idsText}, probleme ${stats.total} (găsite)${missingText} · timp ${formatDuration(
+          elapsedMs
+        )}${etaText}${pauseText}${inflightText}${startText}`;
+        return;
+      }
+
+      const pagesDone = stats.pages;
       const scanPagesTotal = Number.isFinite(totalPages)
         ? Math.max(0, totalPages - scanStart + 1)
         : null;
@@ -1331,9 +1574,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           ? ((scanPagesTotal - pagesDone) / speed) * 1000
           : null;
       const etaText = etaMs != null ? ` · ETA ~${formatDuration(etaMs)}` : '';
-      const pauseText = paused ? ' · pauză' : '';
-      const inflightText = inFlight > 0 ? ` · în lucru ${inFlight}` : '';
-      const startText = scanStart > 1 ? ` (de la ${scanStart})` : '';
+
       progressDiv.textContent = `Progres: pagini ${pagesText}, probleme ${probsText} · timp ${formatDuration(
         elapsedMs
       )}${etaText}${pauseText}${inflightText}${startText}`;
@@ -1485,7 +1726,10 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       ensureResultsAttached();
       renderResults();
 
-      const summary = `Rezumat: ${stats.solved} rezolvate, ${stats.tried} încercate, ${stats.unattempted} neîncercate (total ${stats.total}, pagini ${stats.pages}).`;
+      const unitLabel = scanMode === 'id-range' ? 'ID-uri' : 'pagini';
+      const missingSuffix =
+        scanMode === 'id-range' && stats.missing > 0 ? `, 404 ${stats.missing}` : '';
+      const summary = `Rezumat: ${stats.solved} rezolvate, ${stats.tried} încercate, ${stats.unattempted} neîncercate (total ${stats.total}, ${unitLabel} ${stats.pages}${missingSuffix}).`;
       addLog(summary);
 
       const unsolvedCount = allProblems.filter((p) => p.status !== 'solved').length;
@@ -1511,6 +1755,14 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     let nextSequentialPage = null;
     let queueInitialized = false;
     let inFlight = 0;
+    let idRangeConsecutiveMissing = 0;
+    let idRangeWarnedAboutScore = false;
+    const idRangeLogEvery = Math.max(
+      50,
+      Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_ID_LOG_EVERY))
+        ? Number(window.PBINFO_GET_UNSOLVED_ID_LOG_EVERY)
+        : 200
+    );
 
     const autosaveConfig = {
       enabled: window.PBINFO_GET_UNSOLVED_AUTOSAVE !== false,
@@ -1612,6 +1864,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         version: STATE_STORAGE_VERSION,
         storageLevel: level,
         savedAt: now,
+        scanMode,
+        idRange: scanMode === 'id-range' ? { ...config.idRange } : null,
         pageLink,
         pagination: { ...config.pagination },
         scanStartPage: config.startPage,
@@ -1706,6 +1960,14 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             config.pagination.pageBase = state.pagination.pageBase;
         }
 
+        if (scanMode === 'id-range' && state.idRange && typeof state.idRange === 'object') {
+          if (Number.isFinite(state.idRange.startId))
+            config.idRange.startId = state.idRange.startId;
+          if (Number.isFinite(state.idRange.endId)) config.idRange.endId = state.idRange.endId;
+          if (Number.isFinite(state.idRange.stopAfterMissing))
+            config.idRange.stopAfterMissing = state.idRange.stopAfterMissing;
+        }
+
         if (Number.isFinite(state.scanStartPage)) config.startPage = state.scanStartPage;
 
         const elapsed = Number.isFinite(state.elapsedMs) ? state.elapsedMs : null;
@@ -1723,6 +1985,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             : 0;
           stats.total = Number.isFinite(state.stats.total) ? state.stats.total : 0;
           stats.pages = Number.isFinite(state.stats.pages) ? state.stats.pages : 0;
+          stats.missing = Number.isFinite(state.stats.missing) ? state.stats.missing : 0;
         }
 
         allProblems.length = 0;
@@ -1936,9 +2199,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       if (queueInitialized) return;
       if (!Number.isFinite(totalPages)) return;
       const startAt = Math.max(1, Number.isFinite(config.startPage) ? config.startPage : 1);
-      const cap = Number.isFinite(config.maxPages) ? config.maxPages : null;
+      const cap = scanMode === 'list' && Number.isFinite(config.maxPages) ? config.maxPages : null;
       const cappedTotalPages = cap != null ? Math.min(totalPages, cap) : totalPages;
-      if (cappedTotalPages < totalPages) {
+      if (scanMode === 'list' && cappedTotalPages < totalPages) {
         addLog(
           `<span style="color:#b35c00;"><b>Atenție:</b> totalPages=${totalPages} depășește maxPages=${cap}. Voi scana doar primele ${cappedTotalPages} pagini.</span>`
         );
@@ -1958,7 +2221,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         deferPage(pageIndex, retryCount);
         return;
       }
-      if (Number.isFinite(config.maxPages) && pageIndex > config.maxPages) {
+      if (scanMode === 'list' && Number.isFinite(config.maxPages) && pageIndex > config.maxPages) {
         pageQueue.length = 0;
         deferredPageRequests.clear();
         finishScan({
@@ -1986,14 +2249,20 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         updateProgress(inFlight);
       };
       const effectivePageSize = Number.isFinite(pageSize) ? pageSize : 10;
-      const startOffset = effectivePageSize * (pageIndex - 1);
-      const url = buildPageUrl(pageLink, {
-        pageIndex,
-        pageSize: effectivePageSize,
-        mode: config.pagination.mode,
-        param: config.pagination.param,
-        pageBase: config.pagination.pageBase,
-      });
+      const startOffset = scanMode === 'list' ? effectivePageSize * (pageIndex - 1) : null;
+      const url =
+        scanMode === 'id-range'
+          ? new URL(
+              `/probleme/${pageIndex}`,
+              location?.origin || 'https://www.pbinfo.ro'
+            ).toString()
+          : buildPageUrl(pageLink, {
+              pageIndex,
+              pageSize: effectivePageSize,
+              mode: config.pagination.mode,
+              param: config.pagination.param,
+              pageBase: config.pagination.pageBase,
+            });
       xhr.open('GET', url);
       xhr.timeout = config.timeoutMs;
       xhr.onload = () => {
@@ -2002,11 +2271,13 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           finalize();
           return;
         }
-        if (xhr.status !== 200) {
+        const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
+
+        if (isLikelyPbinfoBlockedHtml(responseText)) {
           if (retryCount < maxRetriesPerPage) {
             const delay = 1000 * (retryCount + 1);
             addLog(
-              `Eroare la pagina ${pageIndex} (status ${xhr.status}). Reîncerc în ${delay / 1000}s...`
+              `Serverul a răspuns cu o pagină de verificare (probabil protecție anti-bot) la ${unitLabel}. Reîncerc în ${delay / 1000}s...`
             );
             finalize();
             setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
@@ -2015,7 +2286,56 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           finalize();
           finishScan({
             complete: false,
-            reason: `Eroare la pagina ${pageIndex} (status ${xhr.status})`,
+            reason: `Blocare detectată la ${unitLabel} (posibil Cloudflare). Încearcă delay mai mare și/sau concurență mai mică.`,
+          });
+          return;
+        }
+
+        if (
+          scanMode === 'id-range' &&
+          (xhr.status === 404 || isLikelyPbinfoNotFoundHtml(responseText))
+        ) {
+          stats.pages++;
+          stats.missing++;
+          idRangeConsecutiveMissing++;
+          maybeAutoSave('id');
+          if (
+            config.idRange.stopAfterMissing > 0 &&
+            idRangeConsecutiveMissing >= config.idRange.stopAfterMissing
+          ) {
+            finalize();
+            pageQueue.length = 0;
+            deferredPageRequests.clear();
+            finishScan({
+              complete: false,
+              reason: `Am întâlnit ${idRangeConsecutiveMissing} ID-uri consecutive inexistente. Oprire automată (setare PBINFO_GET_UNSOLVED_ID_MISSING_STOP).`,
+            });
+            return;
+          }
+          if (stats.pages > 0 && stats.pages % idRangeLogEvery === 0) {
+            addLog(
+              `ID ${pageIndex}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}.`
+            );
+          }
+          finalize();
+          schedule(kick);
+          return;
+        }
+
+        if (xhr.status !== 200) {
+          if (retryCount < maxRetriesPerPage) {
+            const delay = 1000 * (retryCount + 1);
+            addLog(
+              `Eroare la ${unitLabel} (status ${xhr.status}). Reîncerc în ${delay / 1000}s...`
+            );
+            finalize();
+            setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
+            return;
+          }
+          finalize();
+          finishScan({
+            complete: false,
+            reason: `Eroare la ${unitLabel} (status ${xhr.status})`,
           });
           return;
         }
@@ -2024,7 +2344,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           if (retryCount < maxRetriesPerPage) {
             const delay = 1000 * (retryCount + 1);
             addLog(
-              `Serverul a răspuns cu "Invalid request" la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`
+              `Serverul a răspuns cu "Invalid request" la ${unitLabel}. Reîncerc în ${delay / 1000}s...`
             );
             finalize();
             setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
@@ -2033,8 +2353,95 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           finalize();
           finishScan({
             complete: false,
-            reason: `Serverul a răspuns cu "Invalid request" la pagina ${pageIndex}`,
+            reason: `Serverul a răspuns cu "Invalid request" la ${unitLabel}`,
           });
+          return;
+        }
+
+        if (scanMode === 'id-range') {
+          stats.pages++;
+          idRangeConsecutiveMissing = 0;
+
+          const pageEl = document.createElement('div');
+          pageEl.innerHTML = responseText;
+
+          const canonicalAttr = pageEl
+            .querySelector('link[rel="canonical"]')
+            ?.getAttribute?.('href');
+          const link =
+            canonicalAttr != null
+              ? new URL(canonicalAttr, location?.origin || 'https://www.pbinfo.ro').toString()
+              : new URL(
+                  `/probleme/${pageIndex}`,
+                  location?.origin || 'https://www.pbinfo.ro'
+                ).toString();
+
+          const meta = extractProblemMetaFromProblemPage(pageEl, pageIndex);
+          const scoreInfo = extractScoreInfoFromProblemPage(pageEl);
+          const status = classifyProblemStatus(scoreInfo);
+
+          if (!pageEl.querySelector('#scor_utilizator_problema') && !idRangeWarnedAboutScore) {
+            idRangeWarnedAboutScore = true;
+            addLog(
+              `<span style="color:#b35c00;"><b>Atenție:</b> nu pare să fie disponibil punctajul tău pe pagina problemei (lipsește #scor_utilizator_problema). Verifică dacă ești autentificat pe pbinfo.ro.</span>`
+            );
+          }
+
+          if (!seenProblemIds.has(pageIndex)) {
+            seenProblemIds.add(pageIndex);
+            const scoreKnown = scoreInfo.userScore != null && Number.isFinite(scoreInfo.userScore);
+            const maxScore = Number.isFinite(scoreInfo.maxScore) ? scoreInfo.maxScore : 100;
+            const score = scoreKnown ? scoreInfo.userScore : -1;
+            allProblems.push({
+              cnt: allProblems.length + 1,
+              id: pageIndex,
+              name: meta.name,
+              link,
+              difficulty: meta.difficulty,
+              score,
+              scoreKnown,
+              userScore: scoreInfo.userScore,
+              maxScore,
+              status,
+              postedBy_link: meta.postedBy_link,
+              postedBy_name: meta.postedBy_name,
+              postedBy_img: meta.postedBy_img,
+              author: meta.author,
+              source: meta.source,
+            });
+
+            if (status === 'solved') stats.solved++;
+            else if (status === 'tried') stats.tried++;
+            else stats.unattempted++;
+            stats.total++;
+
+            if (
+              shouldDebugDump(pageIndex) &&
+              (scoreInfo.candidates.length === 0 || status === 'unattempted')
+            ) {
+              debugDumped++;
+              console.log('pbinfo-get-unsolved debug problem page:', {
+                id: pageIndex,
+                name: meta.name,
+                link,
+                scoreInfo: { userScore: scoreInfo.userScore, maxScore: scoreInfo.maxScore },
+                candidates: scoreInfo.candidates,
+              });
+              if (debugIncludeHtml) {
+                console.log('pbinfo-get-unsolved debug problem html:', responseText.slice(0, 5000));
+              }
+            }
+          }
+
+          if (stats.pages > 0 && stats.pages % idRangeLogEvery === 0) {
+            addLog(
+              `ID ${pageIndex}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}.`
+            );
+          }
+
+          maybeAutoSave('id');
+          finalize();
+          schedule(kick);
           return;
         }
 
@@ -2238,29 +2645,34 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       xhr.onabort = () => {
         finalize();
         if (stopRequested || finished || restoringState) return;
-        finishScan({ complete: false, reason: `Request abort la pagina ${pageIndex}` });
+        const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
+        finishScan({ complete: false, reason: `Request abort la ${unitLabel}` });
       };
       xhr.ontimeout = () => {
         finalize();
         if (stopRequested || finished || restoringState) return;
         if (retryCount < maxRetriesPerPage) {
           const delay = 1000 * (retryCount + 1);
-          addLog(`Timeout la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
+          const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
+          addLog(`Timeout la ${unitLabel}. Reîncerc în ${delay / 1000}s...`);
           setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
           return;
         }
-        finishScan({ complete: false, reason: `Timeout la pagina ${pageIndex}` });
+        const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
+        finishScan({ complete: false, reason: `Timeout la ${unitLabel}` });
       };
       xhr.onerror = () => {
         finalize();
         if (stopRequested || finished || restoringState) return;
         if (retryCount < maxRetriesPerPage) {
           const delay = 1000 * (retryCount + 1);
-          addLog(`Eroare de rețea la pagina ${pageIndex}. Reîncerc în ${delay / 1000}s...`);
+          const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
+          addLog(`Eroare de rețea la ${unitLabel}. Reîncerc în ${delay / 1000}s...`);
           setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
           return;
         }
-        finishScan({ complete: false, reason: `Eroare de rețea la pagina ${pageIndex}` });
+        const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
+        finishScan({ complete: false, reason: `Eroare de rețea la ${unitLabel}` });
       };
       xhr.send();
     }
@@ -2273,6 +2685,20 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         for (let i = 0; i < config.concurrency; i++) schedule(kick);
       }
     } else {
+      if (scanMode === 'id-range') {
+        const startId = Math.max(1, Number.isFinite(config.startPage) ? config.startPage : 1);
+        const endId = Number.isFinite(config.idRange.endId) ? config.idRange.endId : null;
+        if (endId != null && endId >= startId) {
+          const totalIds = endId - startId + 1;
+          addLog(`Voi scana ID-uri: ${startId}-${endId} (${totalIds} request-uri).`);
+        }
+        if (config.delayMs === 0 && config.concurrency > 1) {
+          addLog(
+            '<span style="color:#b35c00;"><b>Recomandare:</b> pentru scanare pe ID-uri, setează PBINFO_GET_UNSOLVED_DELAY_MS (ex: 150) și concurență mică (1-2), ca să eviți blocarea.</span>'
+          );
+        }
+        initQueueFromTotalPages();
+      }
       fetchPage(config.startPage, 0);
     }
   })();

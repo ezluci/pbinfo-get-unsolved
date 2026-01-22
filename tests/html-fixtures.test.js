@@ -7,6 +7,8 @@ const { parseHTML } = require('linkedom');
 
 const {
   extractScoreInfoFromCard,
+  extractScoreInfoFromProblemPage,
+  extractProblemMetaFromProblemPage,
   classifyProblemStatus,
   parseTotalProblems,
 } = require('../pbinfo-get-unsolved-enhanced.js');
@@ -21,6 +23,11 @@ function parseCard(html) {
   const card = document.querySelector('div.card.mb-3');
   assert.ok(card, 'fixture should contain a card');
   return card;
+}
+
+function parseDocument(html) {
+  const { document } = parseHTML(html);
+  return document;
 }
 
 test('fixture: title tooltip score -> tried', () => {
@@ -76,4 +83,41 @@ test('fixture: footer score "Punctajul tau maxim" -> solved', () => {
 test('fixture: parseTotalProblems', () => {
   const html = loadFixture('list-header-total.html');
   assert.equal(parseTotalProblems(html), 187);
+});
+
+test('fixture: problem page score 100 -> solved', () => {
+  const doc = parseDocument(loadFixture('problem-page-score-100.html'));
+  const scoreInfo = extractScoreInfoFromProblemPage(doc);
+  assert.deepEqual(
+    { userScore: scoreInfo.userScore, maxScore: scoreInfo.maxScore },
+    { userScore: 100, maxScore: null }
+  );
+  assert.equal(classifyProblemStatus(scoreInfo), 'solved');
+  const meta = extractProblemMetaFromProblemPage(doc, 1);
+  assert.equal(meta.name, 'sum');
+  assert.equal(meta.difficulty, 0);
+  assert.equal(meta.author, 'Silviu Candale');
+  assert.equal(meta.source, '');
+});
+
+test('fixture: problem page score 42 -> tried', () => {
+  const doc = parseDocument(loadFixture('problem-page-score-42.html'));
+  const scoreInfo = extractScoreInfoFromProblemPage(doc);
+  assert.deepEqual(
+    { userScore: scoreInfo.userScore, maxScore: scoreInfo.maxScore },
+    { userScore: 42, maxScore: null }
+  );
+  assert.equal(classifyProblemStatus(scoreInfo), 'tried');
+});
+
+test('fixture: problem page without score cell -> unattempted', () => {
+  const doc = parseDocument(loadFixture('problem-page-no-score.html'));
+  const scoreInfo = extractScoreInfoFromProblemPage(doc);
+  assert.deepEqual(
+    { userScore: scoreInfo.userScore, maxScore: scoreInfo.maxScore },
+    { userScore: null, maxScore: null }
+  );
+  assert.equal(classifyProblemStatus(scoreInfo), 'unattempted');
+  const meta = extractProblemMetaFromProblemPage(doc, 8000);
+  assert.equal(meta.name, 'Pagina nu există.');
 });

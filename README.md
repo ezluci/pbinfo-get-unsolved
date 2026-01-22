@@ -9,7 +9,13 @@ Obține o listă cu problemele nerezolvate de la o categorie de probleme de pe p
 1. Intră pe pbinfo.ro și conectează-te la un cont (altfel nu ai punctajul tău pe probleme).
 2. Mergi la lista de probleme pe care vrei să o verifici (o categorie sau lista generală cu filtre).
 3. Deschide consola browser-ului (`Ctrl` + `Shift` + `J`) și rulează scriptul din `pbinfo-get-unsolved-enhanced.js`.
-4. La prompt, apasă `Enter` pentru pagina curentă sau lipește link-ul din bara de adresă și confirmă; apoi alege `start page` (Enter = 1).
+4. La prompt, alege modul de scanare:
+   - `1` = scanare listă (paginare)
+   - `2` = scanare interval ID (request-uri la `/probleme/<id>`)
+5. În modul listă: apasă `Enter` pentru pagina curentă sau lipește link-ul din bara de adresă și confirmă; apoi alege `start page` (Enter = 1).
+6. În modul interval ID: alege intervalul (ex: `1-8000`) și `start ID` pentru resume.
+
+Notă: modul interval ID e util când pbinfo nu afișează toate problemele în lista generală/filtrată, dar este mai lent și necesită delay/concurență mică.
 
 Scriptul va scana paginile din listă și va afișa un tabel + o listă cu problemele care nu sunt rezolvate cu punctaj maxim.
 
@@ -39,6 +45,13 @@ window.PBINFO_GET_UNSOLVED_MAX_PAGES = 5000; // fallback cap (dacă pbinfo nu ma
 window.PBINFO_GET_UNSOLVED_AUTOSAVE = true; // default true (autosave în localStorage)
 window.PBINFO_GET_UNSOLVED_AUTOSAVE_PAGES = 50; // default 50
 window.PBINFO_GET_UNSOLVED_AUTOSAVE_MS = 120000; // default 120000
+
+// mod scanare
+window.PBINFO_GET_UNSOLVED_MODE = 'list'; // "list" | "id-range"
+window.PBINFO_GET_UNSOLVED_ID_START = 1; // default 1
+window.PBINFO_GET_UNSOLVED_ID_END = 8000; // default 8000
+window.PBINFO_GET_UNSOLVED_ID_MISSING_STOP = 0; // default 0 (dezactivat)
+window.PBINFO_GET_UNSOLVED_ID_LOG_EVERY = 200; // default 200 (log periodic la scanare pe ID)
 
 // paginare (în caz că pbinfo schimbă parametrii)
 window.PBINFO_GET_UNSOLVED_PAGE_SIZE = 10; // default auto
@@ -100,6 +113,7 @@ Acest changelog este ținut manual și include doar schimbări majore.
 
 - Îmbunătățiri la scanare, raportare, export și UI (filtre + dark mode + theme toggle).
 - Salvare/încărcare stare scanare în `localStorage` (resume după reload).
+- Mod alternativ de scanare: interval ID (`/probleme/<id>`), pentru cazurile în care lista nu include toate problemele.
 
 ## Issues / sugestii
 
