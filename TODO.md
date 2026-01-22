@@ -14,7 +14,7 @@
 - [x] Add HTML fixture tests for common pbinfo card layouts
 - [x] Add alternate scan mode by problem ID range (`/probleme/<id>`) to avoid missing items from list filtering
 - [x] Add HTML fixture tests for problem page score cell (`#scor_utilizator_problema`)
-- [ ] Consider batched score fetch for ID scans (`ajx-module/json-probleme-scor.php?ids=...`)
+- [x] Consider batched score fetch for ID scans (`ajx-module/json-probleme-scor.php?ids=...`)
 
 ## Medium priority
 
@@ -42,8 +42,9 @@
 - [x] Add theme toggle (system/light/dark)
 - [x] Add a small changelog section in README
 - [x] Add GitHub Actions to run tests on PRs
-- [ ] Add throttled live rendering during scan (optional)
-- [ ] Store and select from multiple saved states (per link)
-- [ ] Add unit tests for state snapshot serialization/restore
-- [ ] Add non-destructive overlay UI mode (avoid wiping page)
-- [ ] Add fuzz tests for score parsing / HTML variations
+- [x] Add throttled live rendering during scan (optional)
+- [x] Store and select from multiple saved states (per link)
+- [x] Add unit tests for state snapshot serialization/restore
+- [x] Add non-destructive overlay UI mode (avoid wiping page)
+- [x] Add fuzz tests for score parsing / HTML variations
+- [ ] Add “close overlay” control (when overlay mode enabled)

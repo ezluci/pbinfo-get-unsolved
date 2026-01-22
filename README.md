@@ -25,7 +25,7 @@ După scanare:
 - Folosește butoanele de export pentru a salva rezultatele în CSV/JSON.
 - Poți copia rapid (lista filtrată) în clipboard: link-uri / ID-uri / Markdown.
 - Tabelul are header sticky + highlight la hover și se adaptează automat la dark mode (tema browser-ului).
-- Poți salva/încărca starea scanării în `localStorage` (util pentru reload-resume).
+- Poți salva/încărca starea scanării în `localStorage` (util pentru reload-resume) + snapshots multiple.
 - Poți schimba tema din UI (sistem/light/dark).
 
 În timpul scanării poți opri rularea din butonul **Stop scan** sau o poți pune pe pauză (**Pauză/Continuă**); rezultatele parțiale rămân afișate.
@@ -52,6 +52,15 @@ window.PBINFO_GET_UNSOLVED_ID_START = 1; // default 1
 window.PBINFO_GET_UNSOLVED_ID_END = 8000; // default 8000
 window.PBINFO_GET_UNSOLVED_ID_MISSING_STOP = 0; // default 0 (dezactivat)
 window.PBINFO_GET_UNSOLVED_ID_LOG_EVERY = 200; // default 200 (log periodic la scanare pe ID)
+window.PBINFO_GET_UNSOLVED_ID_SCORE_BATCH = true; // default true (preluare scoruri în batch)
+window.PBINFO_GET_UNSOLVED_ID_SCORE_BATCH_SIZE = 200; // default 200
+
+// UI
+window.PBINFO_GET_UNSOLVED_OVERLAY = false; // default false (nu șterge pagina, afișează un overlay)
+window.PBINFO_GET_UNSOLVED_LIVE_RENDER = false; // default false (re-randare live, throttled)
+window.PBINFO_GET_UNSOLVED_LIVE_RENDER_EVERY_PAGES = 2; // default 2
+window.PBINFO_GET_UNSOLVED_LIVE_RENDER_MIN_MS = 750; // default 750
+window.PBINFO_GET_UNSOLVED_SNAPSHOTS_MAX = 8; // default 8 (max snapshots per link)
 
 // paginare (în caz că pbinfo schimbă parametrii)
 window.PBINFO_GET_UNSOLVED_PAGE_SIZE = 10; // default auto

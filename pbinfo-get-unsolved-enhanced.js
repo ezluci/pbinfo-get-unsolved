@@ -388,11 +388,93 @@ function problemsToMarkdownText(problems) {
       const name = escapeMarkdownLinkText(p?.name || '');
       const link = typeof p?.link === 'string' ? p.link.trim() : '';
       if (!link) return '';
-      const label = id != null ? `#${id} - ${name}` : name;
+      const label = id != null ? (name ? `#${id} - ${name}` : `#${id}`) : name;
       return `- [${label}](<${link}>)`;
     })
     .filter(Boolean)
     .join('\n');
+}
+
+function serializeProblemForSnapshot(p, level) {
+  const base = {
+    id: p?.id,
+    name: p?.name,
+    link: p?.link,
+    difficulty: p?.difficulty,
+    status: p?.status,
+    userScore: Number.isFinite(p?.userScore) ? p.userScore : null,
+    maxScore: Number.isFinite(p?.maxScore) ? p.maxScore : null,
+  };
+  if (level === 'minimal') return base;
+  return {
+    ...base,
+    postedBy_link: p?.postedBy_link,
+    postedBy_name: p?.postedBy_name,
+    postedBy_img: p?.postedBy_img,
+    author: p?.author,
+    source: p?.source,
+  };
+}
+
+function computeResumeFromStateSnapshot(snapshot) {
+  const candidates = [];
+  const q = Array.isArray(snapshot?.pageQueue) ? snapshot.pageQueue : [];
+  if (q.length > 0 && Number.isFinite(q[0])) candidates.push(q[0]);
+  const d = Array.isArray(snapshot?.deferred) ? snapshot.deferred : [];
+  for (const entry of d) {
+    const pageIndex = Array.isArray(entry) ? entry[0] : entry?.pageIndex;
+    if (Number.isFinite(pageIndex)) candidates.push(pageIndex);
+  }
+  const f = Array.isArray(snapshot?.inFlightPages) ? snapshot.inFlightPages : [];
+  for (const pageIndex of f) if (Number.isFinite(pageIndex)) candidates.push(pageIndex);
+  if (Number.isFinite(snapshot?.nextSequentialPage)) candidates.push(snapshot.nextSequentialPage);
+  const min = candidates.length > 0 ? Math.min(...candidates) : null;
+  return Number.isFinite(min) ? min : null;
+}
+
+function restoreProblemsFromSnapshot(snapshot) {
+  const allProblems = [];
+  const seenProblemIds = new Set();
+
+  const problems = Array.isArray(snapshot?.problems) ? snapshot.problems : [];
+  for (const p of problems) {
+    const id = Number.isFinite(p?.id) ? p.id : NaN;
+    if (!Number.isFinite(id)) continue;
+    const userScore = Number.isFinite(p?.userScore) ? p.userScore : null;
+    const maxScore = Number.isFinite(p?.maxScore) ? p.maxScore : 100;
+    const status =
+      p?.status === 'solved' || p?.status === 'tried' || p?.status === 'unattempted'
+        ? p.status
+        : classifyProblemStatus({ userScore, maxScore });
+    const scoreKnown = userScore != null && Number.isFinite(userScore);
+    allProblems.push({
+      cnt: allProblems.length + 1,
+      id,
+      name: typeof p?.name === 'string' ? p.name : '',
+      link: typeof p?.link === 'string' ? p.link : '',
+      difficulty: Number.isFinite(p?.difficulty) ? p.difficulty : 3,
+      score: scoreKnown ? userScore : -1,
+      scoreKnown,
+      userScore,
+      maxScore,
+      status,
+      postedBy_link: typeof p?.postedBy_link === 'string' ? p.postedBy_link : '',
+      postedBy_name: typeof p?.postedBy_name === 'string' ? p.postedBy_name : '',
+      postedBy_img: typeof p?.postedBy_img === 'string' ? p.postedBy_img : '',
+      author: typeof p?.author === 'string' ? p.author : '',
+      source: typeof p?.source === 'string' ? p.source : '',
+    });
+    seenProblemIds.add(id);
+  }
+
+  if (Array.isArray(snapshot?.seenProblemIds) && snapshot.seenProblemIds.length > 0) {
+    for (const n of snapshot.seenProblemIds) {
+      const id = parseInt(n, 10);
+      if (Number.isFinite(id)) seenProblemIds.add(id);
+    }
+  }
+
+  return { allProblems, seenProblemIds };
 }
 
 if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -415,6 +497,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       problemsToLinksText,
       problemsToIdsText,
       problemsToMarkdownText,
+      serializeProblemForSnapshot,
+      computeResumeFromStateSnapshot,
+      restoreProblemsFromSnapshot,
       isLikelyPbinfoNotFoundHtml,
       isLikelyPbinfoBlockedHtml,
     };
@@ -456,6 +541,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       return {
         full: `${STORAGE_NAMESPACE}:state:v${STATE_STORAGE_VERSION}:${h}`,
         minimal: `${STORAGE_NAMESPACE}:state-min:v${STATE_STORAGE_VERSION}:${h}`,
+        index: `${STORAGE_NAMESPACE}:state-index:v${STATE_STORAGE_VERSION}:${h}`,
+        itemPrefix: `${STORAGE_NAMESPACE}:state-item:v${STATE_STORAGE_VERSION}:${h}:`,
       };
     }
 
@@ -479,10 +566,11 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       } catch {}
     }
 
-    function applyThemePreference(value) {
+    function applyThemePreference(value, targetEl) {
+      const el = targetEl && targetEl.setAttribute ? targetEl : document.documentElement;
       const v = value === 'light' || value === 'dark' || value === 'system' ? value : 'system';
-      if (v === 'system') document.documentElement.removeAttribute('data-theme');
-      else document.documentElement.setAttribute('data-theme', v);
+      if (v === 'system') el.removeAttribute('data-theme');
+      else el.setAttribute('data-theme', v);
       persistThemePreference(v);
       return v;
     }
@@ -502,6 +590,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             ? Number(window.PBINFO_GET_UNSOLVED_ID_MISSING_STOP)
             : 0
         ),
+        scoreBatch: {
+          enabled: window.PBINFO_GET_UNSOLVED_ID_SCORE_BATCH !== false,
+          size: Math.max(
+            1,
+            Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_ID_SCORE_BATCH_SIZE))
+              ? Number(window.PBINFO_GET_UNSOLVED_ID_SCORE_BATCH_SIZE)
+              : 200
+          ),
+        },
       },
       pagination: {
         mode: window.PBINFO_GET_UNSOLVED_PAGINATION_MODE || 'offset',
@@ -738,19 +835,52 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     const firstFetchedPageIndex = config.startPage;
     let themePreference = loadThemePreference();
 
-    // wipe the page and setup UI
-    document.head.innerHTML = '';
-    document.body.innerHTML = '';
-    themePreference = applyThemePreference(themePreference);
+    const overlayEnabled = window.PBINFO_GET_UNSOLVED_OVERLAY === true;
+    const UI_ROOT_ID = 'pbinfo-get-unsolved-root';
+    const UI_STYLE_ID = 'pbinfo-get-unsolved-style';
+    const UI_ID_LOG = 'pbinfo-get-unsolved-log';
+    const UI_ID_PROGRESS = 'pbinfo-get-unsolved-progress';
+    const UI_ID_CONTROLS = 'pbinfo-get-unsolved-controls';
+    const UI_ID_SUMMARY = 'pbinfo-get-unsolved-summary';
+
+    // setup UI root (overlay or destructive)
+    try {
+      document.getElementById(UI_ROOT_ID)?.remove();
+    } catch {}
+    if (!overlayEnabled) {
+      document.head.innerHTML = '';
+      document.body.innerHTML = '';
+      document.body.style.margin = '0';
+      document.body.style.padding = '0';
+    }
+    const appRoot = document.createElement('div');
+    appRoot.id = UI_ROOT_ID;
+    if (overlayEnabled) {
+      appRoot.style.position = 'fixed';
+      appRoot.style.top = '0';
+      appRoot.style.left = '0';
+      appRoot.style.right = '0';
+      appRoot.style.bottom = '0';
+      appRoot.style.zIndex = '2147483647';
+      appRoot.style.overflow = 'auto';
+      appRoot.style.boxShadow = '0 0 0 1px rgba(0,0,0,0.15)';
+    }
+    document.body.appendChild(appRoot);
+    themePreference = applyThemePreference(themePreference, appRoot);
 
     const title = document.createElement('h2');
     title.style.display = 'block';
-    title.innerHTML = '<span style="color: red"> pbinfo-get-unsolved-enhanced.js</span>.';
-    document.body.appendChild(title);
+    const titleSpan = document.createElement('span');
+    titleSpan.style.color = 'red';
+    titleSpan.textContent = 'pbinfo-get-unsolved-enhanced.js';
+    title.appendChild(titleSpan);
+    title.appendChild(document.createTextNode('.'));
+    appRoot.appendChild(title);
 
     const style = document.createElement('style');
+    style.id = UI_STYLE_ID;
     style.innerHTML = `
-        :root{
+        #${UI_ROOT_ID}{
             font-family: Arial, sans-serif;
             --bg: #ffffff;
             --text: #111827;
@@ -762,9 +892,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             --table-row-alt: #fafafa;
             --table-row-hover: #eef2ff;
             --link: #1d4ed8;
+            color-scheme: light dark;
+            background: var(--bg);
+            color: var(--text);
+            padding: 0.9rem;
+            box-sizing: border-box;
+            min-height: 100vh;
         }
         @media (prefers-color-scheme: dark){
-            :root:not([data-theme]){
+            #${UI_ROOT_ID}:not([data-theme]){
                 --bg: #0b0f14;
                 --text: #e5e7eb;
                 --muted: #9ca3af;
@@ -777,10 +913,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                 --link: #93c5fd;
             }
         }
-        :root{ color-scheme: light dark; }
-        :root[data-theme="light"]{ color-scheme: light; }
-        :root[data-theme="dark"]{ color-scheme: dark; }
-        :root[data-theme="dark"]{
+        #${UI_ROOT_ID}[data-theme="light"]{ color-scheme: light; }
+        #${UI_ROOT_ID}[data-theme="dark"]{ color-scheme: dark; }
+        #${UI_ROOT_ID}[data-theme="dark"]{
             --bg: #0b0f14;
             --text: #e5e7eb;
             --muted: #9ca3af;
@@ -792,35 +927,37 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             --table-row-hover: #1b2a44;
             --link: #93c5fd;
         }
-        body{margin:0;padding:0.9rem;background:var(--bg);color:var(--text);}
-        a{color:var(--link);text-decoration:none;}
-        a:hover{cursor:pointer;text-decoration:underline;}
-        #log span{line-height:1.35;}
-        #controls{margin:0.75em 0 0.5em;display:flex;flex-wrap:wrap;gap:0.75em;align-items:flex-end;}
-        #controls .group{display:flex;flex-direction:column;gap:0.25em;min-width:12em;padding:0.5em;border:1px solid var(--border);border-radius:0.5em;background:var(--panel);}
-        #controls label{display:flex;gap:0.4em;align-items:center;user-select:none;}
-        #controls input[type="checkbox"]{accent-color:var(--link);}
-        #controls input[type="number"]{width:8em;border:1px solid var(--border);border-radius:0.45em;padding:0.2em 0.35em;background:var(--bg);color:var(--text);}
-        #controls select{width:12em;border:1px solid var(--border);border-radius:0.45em;padding:0.25em 0.35em;background:var(--bg);color:var(--text);}
-        #controls button{padding:0.35em 0.65em;border:1px solid var(--border);border-radius:0.45em;background:transparent;color:var(--text);}
-        #controls button:hover{background:var(--btn-hover);}
-        #controls button:disabled{opacity:0.55;cursor:not-allowed;}
-        #progress{margin:0.4em 0 0.2em;color:var(--muted);}
-        #summary{margin:0.5em 0;color:var(--text);}
-        .pill{display:inline-block;padding:0.1em 0.4em;border-radius:0.4em;color:white;}
-        .muted{color:var(--muted);}
-        table{border-collapse:collapse;margin-top:0.75em;}
-        th,td{border:1px solid var(--border);padding:0.25em 0.4em;vertical-align:top;}
-        thead th{position:sticky;top:0;background:var(--table-header-bg);z-index:2;}
-        thead th a{display:inline-flex;gap:0.25em;align-items:center;}
-        tbody tr:nth-child(even){background:var(--table-row-alt);}
-        tbody tr:hover{background:var(--table-row-hover);}
+        #${UI_ROOT_ID} a{color:var(--link);text-decoration:none;}
+        #${UI_ROOT_ID} a:hover{cursor:pointer;text-decoration:underline;}
+        #${UI_ROOT_ID} #${UI_ID_LOG} span{line-height:1.35;}
+        #${UI_ROOT_ID} #${UI_ID_CONTROLS}{margin:0.75em 0 0.5em;display:flex;flex-wrap:wrap;gap:0.75em;align-items:flex-end;}
+        #${UI_ROOT_ID} #${UI_ID_CONTROLS} .group{display:flex;flex-direction:column;gap:0.25em;min-width:12em;padding:0.5em;border:1px solid var(--border);border-radius:0.5em;background:var(--panel);}
+        #${UI_ROOT_ID} #${UI_ID_CONTROLS} label{display:flex;gap:0.4em;align-items:center;user-select:none;}
+        #${UI_ROOT_ID} #${UI_ID_CONTROLS} input[type="checkbox"]{accent-color:var(--link);}
+        #${UI_ROOT_ID} #${UI_ID_CONTROLS} input[type="number"]{width:8em;border:1px solid var(--border);border-radius:0.45em;padding:0.2em 0.35em;background:var(--bg);color:var(--text);}
+        #${UI_ROOT_ID} #${UI_ID_CONTROLS} select{width:12em;border:1px solid var(--border);border-radius:0.45em;padding:0.25em 0.35em;background:var(--bg);color:var(--text);}
+        #${UI_ROOT_ID} #${UI_ID_CONTROLS} button{padding:0.35em 0.65em;border:1px solid var(--border);border-radius:0.45em;background:transparent;color:var(--text);}
+        #${UI_ROOT_ID} #${UI_ID_CONTROLS} button:hover{background:var(--btn-hover);}
+        #${UI_ROOT_ID} #${UI_ID_CONTROLS} button:disabled{opacity:0.55;cursor:not-allowed;}
+        #${UI_ROOT_ID} #${UI_ID_PROGRESS}{margin:0.4em 0 0.2em;color:var(--muted);}
+        #${UI_ROOT_ID} #${UI_ID_SUMMARY}{margin:0.5em 0;color:var(--text);}
+        #${UI_ROOT_ID} .pill{display:inline-block;padding:0.1em 0.4em;border-radius:0.4em;color:white;}
+        #${UI_ROOT_ID} .muted{color:var(--muted);}
+        #${UI_ROOT_ID} table{border-collapse:collapse;margin-top:0.75em;}
+        #${UI_ROOT_ID} th, #${UI_ROOT_ID} td{border:1px solid var(--border);padding:0.25em 0.4em;vertical-align:top;}
+        #${UI_ROOT_ID} thead th{position:sticky;top:0;background:var(--table-header-bg);z-index:2;}
+        #${UI_ROOT_ID} thead th a{display:inline-flex;gap:0.25em;align-items:center;}
+        #${UI_ROOT_ID} tbody tr:nth-child(even){background:var(--table-row-alt);}
+        #${UI_ROOT_ID} tbody tr:hover{background:var(--table-row-hover);}
     `;
+    try {
+      document.getElementById(UI_STYLE_ID)?.remove();
+    } catch {}
     document.head.appendChild(style);
 
     const logDiv = document.createElement('div');
-    logDiv.id = 'log';
-    document.body.appendChild(logDiv);
+    logDiv.id = UI_ID_LOG;
+    appRoot.appendChild(logDiv);
 
     function addLog(msg) {
       const d = new Date();
@@ -836,7 +973,11 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         msg;
       span.style.display = 'block';
       logDiv.appendChild(span);
-      window.scroll(0, logDiv.scrollHeight);
+      if (overlayEnabled) {
+        appRoot.scrollTop = appRoot.scrollHeight;
+      } else {
+        window.scroll(0, document.body.scrollHeight);
+      }
     }
 
     if (scanMode === 'id-range') {
@@ -852,16 +993,16 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     }
 
     const progressDiv = document.createElement('div');
-    progressDiv.id = 'progress';
-    document.body.appendChild(progressDiv);
+    progressDiv.id = UI_ID_PROGRESS;
+    appRoot.appendChild(progressDiv);
 
     const controlsDiv = document.createElement('div');
-    controlsDiv.id = 'controls';
-    document.body.appendChild(controlsDiv);
+    controlsDiv.id = UI_ID_CONTROLS;
+    appRoot.appendChild(controlsDiv);
 
     const summaryDiv = document.createElement('div');
-    summaryDiv.id = 'summary';
-    document.body.appendChild(summaryDiv);
+    summaryDiv.id = UI_ID_SUMMARY;
+    appRoot.appendChild(summaryDiv);
 
     let pageSize = config.pageSize;
     let totalProblems = null;
@@ -997,8 +1138,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     table.style.maxWidth = '1050px';
 
     function ensureResultsAttached() {
-      if (!table.isConnected) document.body.appendChild(table);
-      if (!listDiv.isConnected) document.body.appendChild(listDiv);
+      if (!table.isConnected) appRoot.appendChild(table);
+      if (!listDiv.isConnected) appRoot.appendChild(listDiv);
     }
 
     function quickSort(arr, left, right, key) {
@@ -1095,7 +1236,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           a.href = p.link;
           a.target = '_blank';
           a.rel = 'noopener noreferrer';
-          a.textContent = `#${p.id} - ${p.name}`;
+          a.textContent = p.name ? `#${p.id} - ${p.name}` : `#${p.id}`;
           li.appendChild(a);
           ul.appendChild(li);
         }
@@ -1154,13 +1295,46 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       }, 150);
     }
 
+    const liveRenderConfig = {
+      enabled: window.PBINFO_GET_UNSOLVED_LIVE_RENDER === true,
+      everyPages: Math.max(
+        1,
+        Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_LIVE_RENDER_EVERY_PAGES))
+          ? Number(window.PBINFO_GET_UNSOLVED_LIVE_RENDER_EVERY_PAGES)
+          : 2
+      ),
+      minMs: Math.max(
+        0,
+        Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_LIVE_RENDER_MIN_MS))
+          ? Number(window.PBINFO_GET_UNSOLVED_LIVE_RENDER_MIN_MS)
+          : 750
+      ),
+    };
+    let lastLiveRenderAt = 0;
+    let lastLiveRenderPages = 0;
+
+    function maybeLiveRender() {
+      if (!liveRenderConfig.enabled) return;
+      if (finished || stopRequested || restoringState) return;
+      if (allProblems.length === 0) return;
+
+      const now = Date.now();
+      if (stats.pages - lastLiveRenderPages < liveRenderConfig.everyPages) return;
+      if (now - lastLiveRenderAt < liveRenderConfig.minMs) return;
+
+      lastLiveRenderAt = now;
+      lastLiveRenderPages = stats.pages;
+      ensureResultsAttached();
+      requestRenderResults();
+    }
+
     function downloadText(filename, content, mime) {
       const blob = new Blob([content], { type: mime || 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = filename;
-      document.body.appendChild(a);
+      appRoot.appendChild(a);
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -1299,7 +1473,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       }
       themeSelect.value = themePreference;
       themeSelect.addEventListener('change', () => {
-        themePreference = applyThemePreference(themeSelect.value);
+        themePreference = applyThemePreference(themeSelect.value, appRoot);
         themeSelect.value = themePreference;
       });
       themeLabel.appendChild(themeSelect);
@@ -1403,19 +1577,30 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       groupSession.className = 'group';
       groupSession.innerHTML = '<b>Stare (local)</b>';
 
+      const stateSelectLabel = document.createElement('label');
+      stateSelectLabel.textContent = 'Stare';
+      const stateSelect = document.createElement('select');
+      stateSelectLabel.appendChild(stateSelect);
+      groupSession.appendChild(stateSelectLabel);
+
       const saveStateBtn = document.createElement('button');
-      saveStateBtn.textContent = 'Salvează';
+      saveStateBtn.textContent = 'Snapshot';
       saveStateBtn.addEventListener('click', () => {
-        const res = saveScanState({ mode: 'full', reason: 'manual' });
+        const label = prompt('Etichetă snapshot (opțional):', '');
+        if (label === null) return;
+        // update "latest" state too (for quick restore)
+        saveScanState({ mode: 'minimal', reason: 'manual', silent: true });
+        const res = saveSnapshotItem({
+          mode: 'full',
+          label: normalizeSpace(label),
+          reason: 'manual',
+        });
         if (!res.ok) {
-          addLog('<span style="color:#b30000;">Nu am putut salva starea.</span>');
+          addLog('<span style="color:#b30000;">Nu am putut salva snapshot-ul.</span>');
+          refreshSessionInfo();
           return;
         }
-        const note =
-          res.kind === 'full'
-            ? ' (salvat complet)'
-            : ' (salvat compact; posibilă limită de spațiu în localStorage)';
-        addLog(`Stare salvată${note}.`);
+        addLog(`Snapshot salvat (${res.storageLevel}).`);
         refreshSessionInfo();
       });
       groupSession.appendChild(saveStateBtn);
@@ -1435,15 +1620,27 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           );
           return;
         }
-        const ok = confirm('Încarci starea salvată? Rezultatele curente vor fi înlocuite.');
+        const ok = confirm('Încarci starea selectată? Rezultatele curente vor fi înlocuite.');
         if (!ok) return;
-        const loaded = loadSavedStateForLink();
-        if (!loaded) {
-          addLog('Nu există stare salvată pentru acest link.');
-          refreshSessionInfo();
-          return;
+        const selected = normalizeSpace(stateSelect.value);
+        if (selected.startsWith('snapshot:')) {
+          const id = selected.slice('snapshot:'.length);
+          const state = loadSnapshotItem(id);
+          if (!state) {
+            addLog('Snapshot inexistent (probabil șters).');
+            refreshSessionInfo();
+            return;
+          }
+          restoreFromSavedState(state, state.storageLevel === 'full' ? 'full' : 'minimal');
+        } else {
+          const loaded = loadSavedStateForLink();
+          if (!loaded) {
+            addLog('Nu există stare salvată pentru acest link.');
+            refreshSessionInfo();
+            return;
+          }
+          restoreFromSavedState(loaded.state, loaded.kind);
         }
-        restoreFromSavedState(loaded.state, loaded.kind);
         addLog('Stare încărcată.');
         refreshSessionInfo();
       });
@@ -1452,10 +1649,21 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       const clearStateBtn = document.createElement('button');
       clearStateBtn.textContent = 'Șterge';
       clearStateBtn.addEventListener('click', () => {
-        const ok = confirm('Ștergi starea salvată pentru acest link?');
+        const selected = normalizeSpace(stateSelect.value);
+        const ok = confirm(
+          selected.startsWith('snapshot:')
+            ? 'Ștergi snapshot-ul selectat?'
+            : 'Ștergi starea salvată (autosave) pentru acest link?'
+        );
         if (!ok) return;
-        clearSavedStateForLink();
-        addLog('Stare ștearsă.');
+        if (selected.startsWith('snapshot:')) {
+          const id = selected.slice('snapshot:'.length);
+          deleteSnapshotItem(id);
+          addLog('Snapshot șters.');
+        } else {
+          clearSavedStateForLink();
+          addLog('Stare ștearsă.');
+        }
         refreshSessionInfo();
       });
       groupSession.appendChild(clearStateBtn);
@@ -1465,23 +1673,73 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       groupSession.appendChild(sessionInfo);
 
       function refreshSessionInfo() {
-        const existing = loadSavedStateForLink();
-        if (!existing) {
+        const selectedBefore = normalizeSpace(stateSelect.value);
+        stateSelect.replaceChildren();
+
+        const latest = loadSavedStateForLink();
+        const snapshots = loadSnapshotIndexForLink();
+
+        const options = [];
+        if (latest) {
+          const savedAt = latest.state?.savedAt ? formatDateTime(latest.state.savedAt) : '-';
+          const level =
+            latest.kind === 'full'
+              ? 'complet'
+              : latest.state?.storageLevel === 'progress'
+                ? 'progres'
+                : 'compact';
+          options.push({
+            value: 'autosave',
+            label: `Autosave (${level}) · ${savedAt}`,
+            state: latest.state,
+            kind: latest.kind,
+          });
+        }
+        for (const s of snapshots) {
+          const savedAt = s.savedAt != null ? formatDateTime(s.savedAt) : '-';
+          const level =
+            s.storageLevel === 'full'
+              ? 'complet'
+              : s.storageLevel === 'progress'
+                ? 'progres'
+                : 'compact';
+          const lbl = normalizeSpace(s.label);
+          options.push({
+            value: `snapshot:${s.id}`,
+            label: `Snapshot (${level}) · ${savedAt}${lbl ? ` · ${lbl}` : ''}`,
+            state: null,
+            kind: s.storageLevel === 'full' ? 'full' : 'minimal',
+          });
+        }
+
+        if (options.length === 0) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = '— fără stări salvate —';
+          stateSelect.appendChild(opt);
+          stateSelect.disabled = true;
           loadStateBtn.disabled = true;
           clearStateBtn.disabled = true;
           sessionInfo.textContent = 'Nicio stare salvată.';
           return;
         }
+
+        stateSelect.disabled = false;
+        for (const o of options) {
+          const opt = document.createElement('option');
+          opt.value = o.value;
+          opt.textContent = o.label;
+          stateSelect.appendChild(opt);
+        }
+
+        const prefer = options.some((o) => o.value === selectedBefore)
+          ? selectedBefore
+          : options[0].value;
+        stateSelect.value = prefer;
+
         loadStateBtn.disabled = false;
         clearStateBtn.disabled = false;
-        const savedAt = existing.state?.savedAt ? formatDateTime(existing.state.savedAt) : '-';
-        const level =
-          existing.kind === 'full'
-            ? 'complet'
-            : existing.state?.storageLevel === 'progress'
-              ? 'progres'
-              : 'compact';
-        sessionInfo.textContent = `Salvat (${level}) la ${savedAt}.`;
+        sessionInfo.textContent = `Stări salvate: ${options.length}.`;
       }
 
       const groupScan = document.createElement('div');
@@ -1654,7 +1912,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         nameA.href = p.link;
         nameA.target = '_blank';
         nameA.rel = 'noopener noreferrer';
-        nameA.textContent = `#${p.id} - ${p.name}`;
+        nameA.textContent = p.name ? `#${p.id} - ${p.name}` : `#${p.id}`;
         tdName.appendChild(nameA);
         row.appendChild(tdName);
 
@@ -1763,6 +2021,10 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         ? Number(window.PBINFO_GET_UNSOLVED_ID_LOG_EVERY)
         : 200
     );
+    const idRangeScoreCache = new Map();
+    const idRangeScoreBatchInFlight = new Set();
+    const idRangeScoreBatchFailed = new Set();
+    let idRangeWarnedAboutScoreBatch = false;
 
     const autosaveConfig = {
       enabled: window.PBINFO_GET_UNSOLVED_AUTOSAVE !== false,
@@ -1777,6 +2039,14 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_AUTOSAVE_MS))
           ? Number(window.PBINFO_GET_UNSOLVED_AUTOSAVE_MS)
           : 120000
+      ),
+    };
+    const snapshotConfig = {
+      maxEntries: Math.max(
+        1,
+        Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_SNAPSHOTS_MAX))
+          ? Number(window.PBINFO_GET_UNSOLVED_SNAPSHOTS_MAX)
+          : 8
       ),
     };
     let lastAutosaveAt = 0;
@@ -1807,6 +2077,130 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       } catch {}
     }
 
+    function snapshotItemKey(id) {
+      const key = normalizeSpace(id);
+      return key ? `${stateKeys.itemPrefix}${key}` : null;
+    }
+
+    function normalizeSnapshotIndex(index) {
+      const raw = Array.isArray(index) ? index : [];
+      const out = [];
+      for (const item of raw) {
+        const id = normalizeSpace(item?.id);
+        if (!id) continue;
+        const savedAt = Number(item?.savedAt);
+        const storageLevel =
+          item?.storageLevel === 'full' ||
+          item?.storageLevel === 'minimal' ||
+          item?.storageLevel === 'progress'
+            ? item.storageLevel
+            : 'minimal';
+        const label = typeof item?.label === 'string' ? item.label : '';
+        out.push({ id, savedAt: Number.isFinite(savedAt) ? savedAt : null, storageLevel, label });
+      }
+      out.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+      return out;
+    }
+
+    function loadSnapshotIndexForLink() {
+      try {
+        const v = safeJsonParse(localStorage.getItem(stateKeys.index));
+        return normalizeSnapshotIndex(v);
+      } catch {
+        return [];
+      }
+    }
+
+    function writeSnapshotIndexForLink(index) {
+      try {
+        localStorage.setItem(stateKeys.index, JSON.stringify(normalizeSnapshotIndex(index)));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function loadSnapshotItem(id) {
+      const key = snapshotItemKey(id);
+      if (!key) return null;
+      try {
+        const v = safeJsonParse(localStorage.getItem(key));
+        return v && v.pageLink === pageLink ? v : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function deleteSnapshotItem(id) {
+      const key = snapshotItemKey(id);
+      if (!key) return false;
+      try {
+        localStorage.removeItem(key);
+        const idx = loadSnapshotIndexForLink().filter((x) => x.id !== id);
+        writeSnapshotIndexForLink(idx);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function pruneSnapshotIndex(index) {
+      const max = Number.isFinite(snapshotConfig.maxEntries) ? snapshotConfig.maxEntries : 8;
+      const list = normalizeSnapshotIndex(index);
+      const pruned = [];
+      for (const entry of list) {
+        const key = snapshotItemKey(entry.id);
+        if (!key) continue;
+        try {
+          if (localStorage.getItem(key) == null) continue;
+        } catch {}
+        pruned.push(entry);
+        if (pruned.length >= max) break;
+      }
+      const keep = new Set(pruned.map((x) => x.id));
+      for (const entry of list) {
+        if (keep.has(entry.id)) continue;
+        const key = snapshotItemKey(entry.id);
+        if (!key) continue;
+        try {
+          localStorage.removeItem(key);
+        } catch {}
+      }
+      return pruned;
+    }
+
+    function saveSnapshotItem({ mode, label, reason } = {}) {
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const key = snapshotItemKey(id);
+      if (!key) return { ok: false, id: null, storageLevel: null };
+
+      const desired = mode === 'minimal' || mode === 'progress' ? mode : 'full';
+      const levels = desired === 'full' ? ['full', 'minimal', 'progress'] : ['minimal', 'progress'];
+
+      for (const level of levels) {
+        try {
+          const snap = buildStateSnapshot(level, reason || 'snapshot');
+          if (label) snap.label = String(label);
+          localStorage.setItem(key, JSON.stringify(snap));
+
+          const idx = pruneSnapshotIndex([
+            { id, savedAt: snap.savedAt, storageLevel: snap.storageLevel, label: snap.label || '' },
+            ...loadSnapshotIndexForLink(),
+          ]);
+          if (!writeSnapshotIndexForLink(idx)) {
+            localStorage.removeItem(key);
+            return { ok: false, id: null, storageLevel: null };
+          }
+          return { ok: true, id, storageLevel: snap.storageLevel };
+        } catch {}
+      }
+
+      try {
+        localStorage.removeItem(key);
+      } catch {}
+      return { ok: false, id: null, storageLevel: null };
+    }
+
     function serializeFilters() {
       return {
         statuses: Array.from(filterState.statuses),
@@ -1818,44 +2212,6 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     function serializeSorted() {
       return { ...sorted };
-    }
-
-    function serializeProblem(p, level) {
-      const base = {
-        id: p?.id,
-        name: p?.name,
-        link: p?.link,
-        difficulty: p?.difficulty,
-        status: p?.status,
-        userScore: Number.isFinite(p?.userScore) ? p.userScore : null,
-        maxScore: Number.isFinite(p?.maxScore) ? p.maxScore : null,
-      };
-      if (level === 'minimal') return base;
-      return {
-        ...base,
-        postedBy_link: p?.postedBy_link,
-        postedBy_name: p?.postedBy_name,
-        postedBy_img: p?.postedBy_img,
-        author: p?.author,
-        source: p?.source,
-      };
-    }
-
-    function computeResumeFromStateSnapshot(snapshot) {
-      const candidates = [];
-      const q = Array.isArray(snapshot?.pageQueue) ? snapshot.pageQueue : [];
-      if (q.length > 0 && Number.isFinite(q[0])) candidates.push(q[0]);
-      const d = Array.isArray(snapshot?.deferred) ? snapshot.deferred : [];
-      for (const entry of d) {
-        const pageIndex = Array.isArray(entry) ? entry[0] : entry?.pageIndex;
-        if (Number.isFinite(pageIndex)) candidates.push(pageIndex);
-      }
-      const f = Array.isArray(snapshot?.inFlightPages) ? snapshot.inFlightPages : [];
-      for (const pageIndex of f) if (Number.isFinite(pageIndex)) candidates.push(pageIndex);
-      if (Number.isFinite(snapshot?.nextSequentialPage))
-        candidates.push(snapshot.nextSequentialPage);
-      const min = candidates.length > 0 ? Math.min(...candidates) : null;
-      return Number.isFinite(min) ? min : null;
     }
 
     function buildStateSnapshot(level, reason) {
@@ -1894,7 +2250,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         return snapshot;
       }
 
-      snapshot.problems = allProblems.map((p) => serializeProblem(p, level));
+      snapshot.problems = allProblems.map((p) => serializeProblemForSnapshot(p, level));
       snapshot.seenProblemIds = Array.from(seenProblemIds);
       return snapshot;
     }
@@ -1966,6 +2322,12 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           if (Number.isFinite(state.idRange.endId)) config.idRange.endId = state.idRange.endId;
           if (Number.isFinite(state.idRange.stopAfterMissing))
             config.idRange.stopAfterMissing = state.idRange.stopAfterMissing;
+          if (state.idRange.scoreBatch && typeof state.idRange.scoreBatch === 'object') {
+            if (typeof state.idRange.scoreBatch.enabled === 'boolean')
+              config.idRange.scoreBatch.enabled = state.idRange.scoreBatch.enabled;
+            if (Number.isFinite(state.idRange.scoreBatch.size))
+              config.idRange.scoreBatch.size = state.idRange.scoreBatch.size;
+          }
         }
 
         if (Number.isFinite(state.scanStartPage)) config.startPage = state.scanStartPage;
@@ -1991,43 +2353,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         allProblems.length = 0;
         seenProblemIds.clear();
 
-        const problems = Array.isArray(state.problems) ? state.problems : [];
-        for (const p of problems) {
-          const id = Number.isFinite(p?.id) ? p.id : NaN;
-          if (!Number.isFinite(id)) continue;
-          const userScore = Number.isFinite(p?.userScore) ? p.userScore : null;
-          const maxScore = Number.isFinite(p?.maxScore) ? p.maxScore : 100;
-          const status =
-            p?.status === 'solved' || p?.status === 'tried' || p?.status === 'unattempted'
-              ? p.status
-              : classifyProblemStatus({ userScore, maxScore });
-          const scoreKnown = userScore != null && Number.isFinite(userScore);
-          allProblems.push({
-            cnt: allProblems.length + 1,
-            id,
-            name: typeof p?.name === 'string' ? p.name : '',
-            link: typeof p?.link === 'string' ? p.link : '',
-            difficulty: Number.isFinite(p?.difficulty) ? p.difficulty : 3,
-            score: scoreKnown ? userScore : -1,
-            scoreKnown,
-            userScore,
-            maxScore,
-            status,
-            postedBy_link: typeof p?.postedBy_link === 'string' ? p.postedBy_link : '',
-            postedBy_name: typeof p?.postedBy_name === 'string' ? p.postedBy_name : '',
-            postedBy_img: typeof p?.postedBy_img === 'string' ? p.postedBy_img : '',
-            author: typeof p?.author === 'string' ? p.author : '',
-            source: typeof p?.source === 'string' ? p.source : '',
-          });
-          seenProblemIds.add(id);
-        }
-
-        if (Array.isArray(state.seenProblemIds) && state.seenProblemIds.length > 0) {
-          for (const n of state.seenProblemIds) {
-            const id = parseInt(n, 10);
-            if (Number.isFinite(id)) seenProblemIds.add(id);
-          }
-        }
+        const restored = restoreProblemsFromSnapshot(state);
+        for (const p of restored.allProblems) allProblems.push(p);
+        for (const id of restored.seenProblemIds) seenProblemIds.add(id);
 
         if (state.filters && typeof state.filters === 'object') {
           const statuses = new Set(
@@ -2132,6 +2460,222 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       else fn();
     }
 
+    function parseIdRangeScoreValue(raw) {
+      const t = normalizeSpace(raw);
+      if (!t || t === '-') return { value: null, raw: '-' };
+      const n = parseInt(t, 10);
+      return Number.isFinite(n) ? { value: n, raw: t } : { value: null, raw: t };
+    }
+
+    function idRangeScoreBatchStartForId(id) {
+      if (!Number.isFinite(id)) return null;
+      const startId = Number.isFinite(config.idRange.startId) ? config.idRange.startId : 1;
+      const size = Number.isFinite(config.idRange.scoreBatch?.size)
+        ? config.idRange.scoreBatch.size
+        : 200;
+      if (id < startId || size <= 0) return null;
+      return startId + Math.floor((id - startId) / size) * size;
+    }
+
+    function fetchIdRangeScoreBatch(batchStart, retryCount = 0) {
+      if (finished || stopRequested || restoringState) return;
+      if (!config.idRange.scoreBatch?.enabled) return;
+      if (!Number.isFinite(batchStart)) return;
+      if (idRangeScoreBatchInFlight.has(batchStart) || idRangeScoreBatchFailed.has(batchStart))
+        return;
+      if (paused) return;
+
+      const size = Number.isFinite(config.idRange.scoreBatch.size)
+        ? config.idRange.scoreBatch.size
+        : 200;
+      const endId = Number.isFinite(config.idRange.endId) ? config.idRange.endId : null;
+      if (endId == null) return;
+
+      const ids = [];
+      const batchEnd = Math.min(endId, batchStart + size - 1);
+      for (let id = batchStart; id <= batchEnd; id++) ids.push(id);
+
+      idRangeScoreBatchInFlight.add(batchStart);
+      const xhr = new XMLHttpRequest();
+      activeRequests.add(xhr);
+      let finalized = false;
+      const finalize = () => {
+        if (finalized) return;
+        finalized = true;
+        activeRequests.delete(xhr);
+        idRangeScoreBatchInFlight.delete(batchStart);
+      };
+
+      const url = new URL(
+        '/ajx-module/json-probleme-scor.php',
+        location?.origin || 'https://www.pbinfo.ro'
+      );
+      url.searchParams.set('ids', ids.join(','));
+
+      xhr.open('GET', url.toString());
+      xhr.timeout = config.timeoutMs;
+      xhr.onload = () => {
+        const responseText = xhr.responseText || xhr.response || '';
+        if (stopRequested || finished || restoringState) {
+          finalize();
+          return;
+        }
+
+        if (isLikelyPbinfoBlockedHtml(responseText)) {
+          if (retryCount < maxRetriesPerPage) {
+            const delay = 1000 * (retryCount + 1);
+            if (!idRangeWarnedAboutScoreBatch) {
+              idRangeWarnedAboutScoreBatch = true;
+              addLog(
+                '<span style="color:#b35c00;"><b>Atenție:</b> am detectat o pagină de verificare (posibil Cloudflare) la request-ul de scoruri (batch). Folosește delay mai mare / concurență mai mică.</span>'
+              );
+            }
+            finalize();
+            setTimeout(() => fetchIdRangeScoreBatch(batchStart, retryCount + 1), delay);
+            return;
+          }
+          finalize();
+          finishScan({
+            complete: false,
+            reason:
+              'Blocare detectată la fetch-ul de scoruri (batch). Încearcă delay mai mare și/sau concurență mai mică.',
+          });
+          return;
+        }
+
+        if (xhr.status !== 200) {
+          if (retryCount < maxRetriesPerPage) {
+            const delay = 1000 * (retryCount + 1);
+            finalize();
+            setTimeout(() => fetchIdRangeScoreBatch(batchStart, retryCount + 1), delay);
+            return;
+          }
+          finalize();
+          idRangeScoreBatchFailed.add(batchStart);
+          addLog(
+            `<span style="color:#b35c00;"><b>Score batch:</b> eșuat pentru ${batchStart}-${batchEnd} (status ${xhr.status}); continui fără scoruri batch.</span>`
+          );
+          schedule(kick);
+          return;
+        }
+
+        let payload = null;
+        try {
+          payload = typeof responseText === 'string' ? JSON.parse(responseText) : responseText;
+        } catch {
+          payload = null;
+        }
+
+        const data = Array.isArray(payload?.data) ? payload.data : [];
+        for (const item of data) {
+          const id = parseInt(item?.id_problema, 10);
+          if (!Number.isFinite(id)) continue;
+          const raw = item?.scor == null ? '-' : String(item.scor);
+          const parsed = parseIdRangeScoreValue(raw);
+          idRangeScoreCache.set(id, { raw: parsed.raw, value: parsed.value });
+        }
+
+        finalize();
+        schedule(kick);
+      };
+      xhr.onabort = () => {
+        finalize();
+      };
+      xhr.ontimeout = () => {
+        finalize();
+        if (stopRequested || finished || restoringState) return;
+        if (retryCount < maxRetriesPerPage) {
+          const delay = 1000 * (retryCount + 1);
+          setTimeout(() => fetchIdRangeScoreBatch(batchStart, retryCount + 1), delay);
+          return;
+        }
+        idRangeScoreBatchFailed.add(batchStart);
+        addLog(
+          `<span style="color:#b35c00;"><b>Score batch:</b> timeout pentru batch ${batchStart}-${batchEnd}; continui fără scoruri batch.</span>`
+        );
+        schedule(kick);
+      };
+      xhr.onerror = () => {
+        finalize();
+        if (stopRequested || finished || restoringState) return;
+        if (retryCount < maxRetriesPerPage) {
+          const delay = 1000 * (retryCount + 1);
+          setTimeout(() => fetchIdRangeScoreBatch(batchStart, retryCount + 1), delay);
+          return;
+        }
+        idRangeScoreBatchFailed.add(batchStart);
+        addLog(
+          `<span style="color:#b35c00;"><b>Score batch:</b> eroare rețea pentru batch ${batchStart}-${batchEnd}; continui fără scoruri batch.</span>`
+        );
+        schedule(kick);
+      };
+      xhr.send();
+    }
+
+    function getIdRangeScorePrefetchState(id) {
+      if (scanMode !== 'id-range') return { cached: null, pending: false, batchStart: null };
+      if (!config.idRange.scoreBatch?.enabled)
+        return { cached: null, pending: false, batchStart: null };
+      const cached = idRangeScoreCache.get(id) || null;
+      if (cached) return { cached, pending: false, batchStart: null };
+      const batchStart = idRangeScoreBatchStartForId(id);
+      if (batchStart == null || idRangeScoreBatchFailed.has(batchStart))
+        return { cached: null, pending: false, batchStart };
+      if (!idRangeScoreBatchInFlight.has(batchStart)) fetchIdRangeScoreBatch(batchStart, 0);
+      return { cached: null, pending: true, batchStart };
+    }
+
+    function processIdRangeFromScoreBatch(problemId, cached) {
+      const scoreValue = Number.isFinite(cached?.value) ? cached.value : null;
+      if (scoreValue == null) return false;
+
+      stats.pages++;
+      idRangeConsecutiveMissing = 0;
+
+      const userScore = scoreValue;
+      const maxScore = 100;
+      const status = userScore >= maxScore ? 'solved' : 'tried';
+
+      if (!seenProblemIds.has(problemId)) {
+        seenProblemIds.add(problemId);
+        allProblems.push({
+          cnt: allProblems.length + 1,
+          id: problemId,
+          name: '',
+          link: new URL(
+            `/probleme/${problemId}`,
+            location?.origin || 'https://www.pbinfo.ro'
+          ).toString(),
+          difficulty: 3,
+          score: userScore,
+          scoreKnown: true,
+          userScore,
+          maxScore,
+          status,
+          postedBy_link: '',
+          postedBy_name: '',
+          postedBy_img: '',
+          author: '',
+          source: '',
+        });
+
+        if (status === 'solved') stats.solved++;
+        else stats.tried++;
+        stats.total++;
+      }
+
+      if (stats.pages > 0 && stats.pages % idRangeLogEvery === 0) {
+        addLog(
+          `ID ${problemId}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}.`
+        );
+      }
+
+      maybeAutoSave('id');
+      updateProgress(inFlight);
+      maybeLiveRender();
+      return true;
+    }
+
     function deferPage(pageIndex, retryCount) {
       if (!Number.isFinite(pageIndex)) return;
       const idx = Math.trunc(pageIndex);
@@ -2230,6 +2774,21 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         });
         return;
       }
+
+      if (scanMode === 'id-range') {
+        const prefetch = getIdRangeScorePrefetchState(pageIndex);
+        if (prefetch.pending) {
+          deferPage(pageIndex, retryCount);
+          return;
+        }
+        if (prefetch.cached && Number.isFinite(prefetch.cached.value)) {
+          if (processIdRangeFromScoreBatch(pageIndex, prefetch.cached)) {
+            schedule(kick);
+            return;
+          }
+        }
+      }
+
       if (inFlight >= config.concurrency) {
         deferPage(pageIndex, retryCount);
         return;
@@ -2440,6 +2999,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           }
 
           maybeAutoSave('id');
+          maybeLiveRender();
           finalize();
           schedule(kick);
           return;
@@ -2633,6 +3193,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           );
         }
 
+        maybeLiveRender();
         maybeAutoSave('page');
         finalize();
         if (queueInitialized) {
