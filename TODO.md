@@ -15,6 +15,7 @@
 - [x] Add alternate scan mode by problem ID range (`/probleme/<id>`) to avoid missing items from list filtering
 - [x] Add HTML fixture tests for problem page score cell (`#scor_utilizator_problema`)
 - [x] Consider batched score fetch for ID scans (`ajx-module/json-probleme-scor.php?ids=...`)
+- [x] Skip forbidden problem IDs (HTTP 403) during ID scan instead of aborting
 
 ## Medium priority
 

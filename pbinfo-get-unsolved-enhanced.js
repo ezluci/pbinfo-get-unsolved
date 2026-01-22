@@ -1015,7 +1015,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     let totalPages = scanMode === 'id-range' ? config.idRange.endId : null;
     let startedAt = Date.now();
 
-    const stats = { solved: 0, tried: 0, unattempted: 0, total: 0, pages: 0, missing: 0 };
+    const stats = {
+      solved: 0,
+      tried: 0,
+      unattempted: 0,
+      total: 0,
+      pages: 0,
+      missing: 0,
+      forbidden: 0,
+    };
     let finished = false;
     let scanEnd = null;
     let restoringState = false;
@@ -1808,9 +1816,10 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           totalIds != null && totalIds > 0 && speed > 0 ? ((totalIds - done) / speed) * 1000 : null;
         const etaText = etaMs != null ? ` · ETA ~${formatDuration(etaMs)}` : '';
         const missingText = stats.missing > 0 ? ` · 404 ${stats.missing}` : '';
+        const forbiddenText = stats.forbidden > 0 ? ` · 403 ${stats.forbidden}` : '';
         progressDiv.textContent = `Progres: ID-uri ${idsText}, probleme ${stats.total} (găsite)${missingText} · timp ${formatDuration(
           elapsedMs
-        )}${etaText}${pauseText}${inflightText}${startText}`;
+        )}${etaText}${pauseText}${inflightText}${startText}${forbiddenText}`;
         return;
       }
 
@@ -1991,9 +2000,16 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       renderResults();
 
       const unitLabel = scanMode === 'id-range' ? 'ID-uri' : 'pagini';
-      const missingSuffix =
-        scanMode === 'id-range' && stats.missing > 0 ? `, 404 ${stats.missing}` : '';
-      const summary = `Rezumat: ${stats.solved} rezolvate, ${stats.tried} încercate, ${stats.unattempted} neîncercate (total ${stats.total}, ${unitLabel} ${stats.pages}${missingSuffix}).`;
+      const idRangeSuffixParts =
+        scanMode === 'id-range'
+          ? [
+              stats.missing > 0 ? `404 ${stats.missing}` : null,
+              stats.forbidden > 0 ? `403 ${stats.forbidden}` : null,
+            ].filter(Boolean)
+          : [];
+      const idRangeSuffix =
+        idRangeSuffixParts.length > 0 ? `, ${idRangeSuffixParts.join(', ')}` : '';
+      const summary = `Rezumat: ${stats.solved} rezolvate, ${stats.tried} încercate, ${stats.unattempted} neîncercate (total ${stats.total}, ${unitLabel} ${stats.pages}${idRangeSuffix}).`;
       addLog(summary);
 
       const unsolvedCount = allProblems.filter((p) => p.status !== 'solved').length;
@@ -2354,6 +2370,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           stats.total = Number.isFinite(state.stats.total) ? state.stats.total : 0;
           stats.pages = Number.isFinite(state.stats.pages) ? state.stats.pages : 0;
           stats.missing = Number.isFinite(state.stats.missing) ? state.stats.missing : 0;
+          stats.forbidden = Number.isFinite(state.stats.forbidden) ? state.stats.forbidden : 0;
         }
 
         allProblems.length = 0;
@@ -2671,8 +2688,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       }
 
       if (stats.pages > 0 && stats.pages % idRangeLogEvery === 0) {
+        const forbiddenSuffix = stats.forbidden > 0 ? ` · 403 ${stats.forbidden}` : '';
         addLog(
-          `ID ${problemId}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}.`
+          `ID ${problemId}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}${forbiddenSuffix}.`
         );
       }
 
@@ -2878,10 +2896,24 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             return;
           }
           if (stats.pages > 0 && stats.pages % idRangeLogEvery === 0) {
+            const forbiddenSuffix = stats.forbidden > 0 ? ` · 403 ${stats.forbidden}` : '';
             addLog(
-              `ID ${pageIndex}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}.`
+              `ID ${pageIndex}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}${forbiddenSuffix}.`
             );
           }
+          finalize();
+          schedule(kick);
+          return;
+        }
+
+        if (scanMode === 'id-range' && (xhr.status === 401 || xhr.status === 403)) {
+          stats.pages++;
+          stats.forbidden++;
+          idRangeConsecutiveMissing = 0;
+          maybeAutoSave('id');
+          addLog(
+            `<span style="color:#b35c00;"><b>Atenție:</b> ${unitLabel} a răspuns cu status ${xhr.status} (Acces interzis). Sar peste și continui scanarea.</span>`
+          );
           finalize();
           schedule(kick);
           return;
@@ -2999,8 +3031,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           }
 
           if (stats.pages > 0 && stats.pages % idRangeLogEvery === 0) {
+            const forbiddenSuffix = stats.forbidden > 0 ? ` · 403 ${stats.forbidden}` : '';
             addLog(
-              `ID ${pageIndex}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}.`
+              `ID ${pageIndex}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}${forbiddenSuffix}.`
             );
           }
 
