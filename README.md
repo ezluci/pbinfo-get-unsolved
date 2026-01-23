@@ -2,7 +2,7 @@
 
 Obține o listă cu problemele nerezolvate de la o categorie de probleme de pe pbinfo.ro.
 
-![screenshot](https://user-images.githubusercontent.com/68049793/193668559-2e0f63a8-1d9e-45ea-8839-09b55d1a5608.png)
+<img width="1920" height="1080" alt="Screenshot" src="https://github.com/user-attachments/assets/604a2d1d-a318-4e7d-93d3-85603c8aa2ad" />
 
 ## Cum îl folosești
 
