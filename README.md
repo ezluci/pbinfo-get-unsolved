@@ -1,10 +1,130 @@
 # pbinfo-get-unsolved
-UPDATED
 
 Obține o listă cu problemele nerezolvate de la o categorie de probleme de pe pbinfo.ro.
 
 ![screenshot](https://user-images.githubusercontent.com/68049793/193668559-2e0f63a8-1d9e-45ea-8839-09b55d1a5608.png)
 
-Pentru a folosi acest script, întâi trebuie să cauți categoria de probleme unde vrei să găsești problemele nerezolvate. Intră pe pbinfo.ro și conectează-te la un cont. Apoi, intră pe una din cele 4 categorii mari de probleme (clasa a IX-a, clasa a X-a, clasa a XI-a, probleme din concursuri), după care intră pe o categorie normală de probleme. Apoi, apasă CTRL + SHIFT + J ca să deschizi consola browser-ului. Aici trebuie să pui scriptul aflat în fișierul `pbinfo-get-unsolved.js` din acest repozitoriu, apoi să apeși enter. Acum script-ul cere link-ul către categoria de probleme, care se găsește în bara de adresă din susul paginii pbinfo.ro. După inserare și acceptare, scriptul va începe să caute probleme nerezolvate din acea categorie.
+## Cum îl folosești
 
-Pentru nelămuriri cu privire la folosirea acestui script sau pentru sugestii, creează un Issue [aici](https://github.com/ezluci/pbinfo-get-unsolved/issues) sau dă-mi mesaj pe Discord (@ezluci) sau pe e-mail (ezluci1@gmail.com). Dacă crezi că acest script îți este util, nu uita să dai o steluță la repozitoriu în colțul din dreapta sus. Mulțumesc!
+1. Intră pe pbinfo.ro și conectează-te la un cont (altfel nu ai punctajul tău pe probleme).
+2. Mergi la lista de probleme pe care vrei să o verifici (o categorie sau lista generală cu filtre).
+3. Deschide consola browser-ului (`Ctrl` + `Shift` + `J`) și rulează scriptul din `pbinfo-get-unsolved-enhanced.js`.
+4. La prompt, alege modul de scanare:
+   - `1` = scanare listă (paginare)
+   - `2` = scanare interval ID (request-uri la `/probleme/<id>`)
+5. În modul listă: apasă `Enter` pentru pagina curentă sau lipește link-ul din bara de adresă și confirmă; apoi alege `start page` (Enter = 1).
+6. În modul interval ID: alege intervalul (ex: `1-8000`) și `start ID` pentru resume.
+
+Notă: modul interval ID e util când pbinfo nu afișează toate problemele în lista generală/filtrată, dar este mai lent și necesită delay/concurență mică.
+
+Scriptul va scana paginile din listă și va afișa un tabel + o listă cu problemele care nu sunt rezolvate cu punctaj maxim.
+
+După scanare:
+
+- Folosește controalele de filtrare (stare + punctaj) pentru a restrânge lista.
+- Folosește butoanele de export pentru a salva rezultatele în CSV/JSON.
+- Poți copia rapid (lista filtrată) în clipboard: link-uri / ID-uri / Markdown.
+- Tabelul are header sticky + highlight la hover și se adaptează automat la dark mode (tema browser-ului).
+- Poți salva/încărca starea scanării în `localStorage` (util pentru reload-resume) + snapshots multiple.
+- Poți schimba tema din UI (sistem/light/dark).
+
+În timpul scanării poți opri rularea din butonul **Stop scan** sau o poți pune pe pauză (**Pauză/Continuă**); rezultatele parțiale rămân afișate.
+
+## Config (opțional)
+
+Poți seta câteva variabile înainte să rulezi scriptul:
+
+```js
+// performanță / rețea
+window.PBINFO_GET_UNSOLVED_CONCURRENCY = 3; // default 1
+window.PBINFO_GET_UNSOLVED_DELAY_MS = 150; // delay între request-uri (ms), default 0
+window.PBINFO_GET_UNSOLVED_TIMEOUT_MS = 30000; // default 30000
+window.PBINFO_GET_UNSOLVED_MAX_RETRIES = 3; // default 3
+window.PBINFO_GET_UNSOLVED_START_PAGE = 1; // default 1 (resume: > 1)
+window.PBINFO_GET_UNSOLVED_MAX_PAGES = 5000; // fallback cap (dacă pbinfo nu mai raportează totalul corect)
+window.PBINFO_GET_UNSOLVED_AUTOSAVE = true; // default true (autosave în localStorage)
+window.PBINFO_GET_UNSOLVED_AUTOSAVE_PAGES = 50; // default 50
+window.PBINFO_GET_UNSOLVED_AUTOSAVE_MS = 120000; // default 120000
+
+// mod scanare
+window.PBINFO_GET_UNSOLVED_MODE = 'list'; // "list" | "id-range" (default în prompt)
+window.PBINFO_GET_UNSOLVED_MODE_PROMPT = true; // default true; setează false ca să sari peste prompt
+window.PBINFO_GET_UNSOLVED_ID_START = 1; // default 1
+window.PBINFO_GET_UNSOLVED_ID_END = 8000; // default 8000
+window.PBINFO_GET_UNSOLVED_ID_MISSING_STOP = 0; // default 0 (dezactivat)
+window.PBINFO_GET_UNSOLVED_ID_LOG_EVERY = 200; // default 200 (log periodic la scanare pe ID)
+window.PBINFO_GET_UNSOLVED_ID_SCORE_BATCH = true; // default true (preluare scoruri în batch)
+window.PBINFO_GET_UNSOLVED_ID_SCORE_BATCH_SIZE = 200; // default 200
+
+// UI
+window.PBINFO_GET_UNSOLVED_OVERLAY = false; // default false (nu șterge pagina, afișează un overlay)
+window.PBINFO_GET_UNSOLVED_LIVE_RENDER = false; // default false (re-randare live, throttled)
+window.PBINFO_GET_UNSOLVED_LIVE_RENDER_EVERY_PAGES = 2; // default 2
+window.PBINFO_GET_UNSOLVED_LIVE_RENDER_MIN_MS = 750; // default 750
+window.PBINFO_GET_UNSOLVED_SNAPSHOTS_MAX = 8; // default 8 (max snapshots per link)
+
+// paginare (în caz că pbinfo schimbă parametrii)
+window.PBINFO_GET_UNSOLVED_PAGE_SIZE = 10; // default auto
+window.PBINFO_GET_UNSOLVED_PAGINATION_MODE = 'offset'; // "offset" | "page"
+window.PBINFO_GET_UNSOLVED_PAGE_PARAM = 'start'; // default "start"
+window.PBINFO_GET_UNSOLVED_PAGE_BASE = 1; // doar pentru mode="page"
+```
+
+Notă: dacă folosești `START_PAGE > 1` în modul `offset` și lista ta are un `PAGE_SIZE` diferit de 10, setează explicit `PBINFO_GET_UNSOLVED_PAGE_SIZE` ca să nu sară pagini.
+
+## Debug
+
+Dacă scriptul ratează probleme sau nu reușește să identifice punctajul, poți activa un mod de debug (log în consolă).
+
+Înainte să rulezi scriptul, execută în consolă:
+
+```js
+window.PBINFO_GET_UNSOLVED_DEBUG = true;
+window.PBINFO_GET_UNSOLVED_DEBUG_IDS = [4926, 4928, 4929, 4930, 4936];
+// opțional:
+window.PBINFO_GET_UNSOLVED_DEBUG_LIMIT = 50;
+window.PBINFO_GET_UNSOLVED_DEBUG_HTML = false;
+```
+
+Apoi rulează din nou `pbinfo-get-unsolved-enhanced.js`. Vei primi dump-uri cu ce “vede” parser-ul pentru cardurile respective.
+
+## Bookmarklet (opțional)
+
+Poți genera un bookmarklet minificat:
+
+```bash
+npm install
+npm run build:bookmarklet
+```
+
+Rezultatul este scris în `dist/pbinfo-get-unsolved.bookmarklet.txt`. Copiază conținutul în URL-ul unui bookmark nou, apoi rulează-l pe o pagină pbinfo.
+
+## Development
+
+Rulează testele local:
+
+```bash
+npm install
+npm test
+```
+
+Lint + format:
+
+```bash
+npm run lint
+npm run format
+```
+
+## Changelog (scurt)
+
+Acest changelog este ținut manual și include doar schimbări majore.
+
+### Unreleased
+
+- Îmbunătățiri la scanare, raportare, export și UI (filtre + dark mode + theme toggle).
+- Salvare/încărcare stare scanare în `localStorage` (resume după reload).
+- Mod alternativ de scanare: interval ID (`/probleme/<id>`), pentru cazurile în care lista nu include toate problemele.
+
+## Issues / sugestii
+
+Pentru nelămuriri sau sugestii, creează un Issue în acest repository.
