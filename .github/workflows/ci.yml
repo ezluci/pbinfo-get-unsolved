@@ -33,5 +33,5 @@ jobs:
       - name: Format check
         run: npm run format:check
 
-      - name: Build bookmarklet
+      - name: Build dist artifacts
         run: npm run build:bookmarklet

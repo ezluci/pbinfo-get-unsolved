@@ -1,5 +1,6 @@
 {
   "name": "pbinfo-get-unsolved",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
     "build:bookmarklet": "node scripts/build-bookmarklet.cjs",

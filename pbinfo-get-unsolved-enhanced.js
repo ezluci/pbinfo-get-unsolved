@@ -320,6 +320,128 @@ function buildPageUrl(
   return u.toString();
 }
 
+function computeBackoffWithJitter(
+  attempt,
+  { baseMs = 500, capMs = 15000, jitter = true, random = Math.random } = {}
+) {
+  const n = Number.isFinite(attempt) ? Math.max(0, Math.trunc(attempt)) : 0;
+  const base = Number.isFinite(baseMs) ? Math.max(1, Math.trunc(baseMs)) : 500;
+  const cap = Number.isFinite(capMs) ? Math.max(base, Math.trunc(capMs)) : Math.max(base, 15000);
+  const exp = Math.min(cap, base * 2 ** n);
+  if (!jitter) return exp;
+  const rnd = typeof random === 'function' ? Number(random()) : Math.random();
+  const boundedRnd = Number.isFinite(rnd) ? Math.min(1, Math.max(0, rnd)) : Math.random();
+  return Math.max(0, Math.trunc(boundedRnd * exp));
+}
+
+function nextAdaptiveThrottleState(state, event, { capMs = 15000 } = {}) {
+  const prev = state && typeof state === 'object' ? state : {};
+  const next = {
+    enabled: prev.enabled !== false,
+    baseDelayMs: Number.isFinite(prev.baseDelayMs) ? Math.max(0, prev.baseDelayMs) : 0,
+    baseConcurrency: Number.isFinite(prev.baseConcurrency) ? Math.max(1, prev.baseConcurrency) : 1,
+    delayMs: Number.isFinite(prev.delayMs) ? Math.max(0, prev.delayMs) : 0,
+    concurrency: Number.isFinite(prev.concurrency) ? Math.max(1, prev.concurrency) : 1,
+    cleanStreak: Number.isFinite(prev.cleanStreak) ? Math.max(0, prev.cleanStreak) : 0,
+  };
+  if (!next.enabled) return next;
+
+  const cap = Number.isFinite(capMs)
+    ? Math.max(next.baseDelayMs, Math.trunc(capMs))
+    : Math.max(next.baseDelayMs, 15000);
+  if (event === 'success') {
+    next.cleanStreak += 1;
+    if (next.cleanStreak >= 20) {
+      next.cleanStreak = 0;
+      next.delayMs = Math.max(next.baseDelayMs, Math.floor(next.delayMs * 0.85));
+      next.concurrency = Math.min(next.baseConcurrency, next.concurrency + 1);
+    }
+    return next;
+  }
+
+  next.cleanStreak = 0;
+  if (event === 'blocked') {
+    next.concurrency = 1;
+    next.delayMs = Math.min(cap, Math.max(next.delayMs * 2, next.baseDelayMs + 1000));
+    return next;
+  }
+
+  next.concurrency = Math.max(1, next.concurrency - 1);
+  next.delayMs = Math.min(cap, Math.max(next.delayMs + 250, next.baseDelayMs));
+  return next;
+}
+
+function migrateStateSnapshotToV2(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+
+  const src = snapshot;
+  const storageLevel =
+    src.storageLevel === 'full' || src.storageLevel === 'minimal' || src.storageLevel === 'progress'
+      ? src.storageLevel
+      : Array.isArray(src.problems)
+        ? 'minimal'
+        : 'progress';
+
+  const out = { ...src };
+  out.version = 2;
+  out.schemaVersion = 2;
+  out.storageLevel = storageLevel;
+  out.savedAt = Number.isFinite(Number(src.savedAt)) ? Number(src.savedAt) : Date.now();
+  out.pageQueue = Array.isArray(src.pageQueue)
+    ? src.pageQueue
+        .map((x) => parseInt(x, 10))
+        .filter(Number.isFinite)
+        .map((x) => Math.trunc(x))
+    : [];
+  out.deferred = Array.isArray(src.deferred)
+    ? src.deferred
+        .map((entry) => {
+          const pageIndex = Array.isArray(entry)
+            ? parseInt(entry[0], 10)
+            : parseInt(entry?.pageIndex, 10);
+          const retryCount = Array.isArray(entry)
+            ? parseInt(entry[1], 10)
+            : parseInt(entry?.retryCount, 10);
+          if (!Number.isFinite(pageIndex) || !Number.isFinite(retryCount)) return null;
+          return [Math.trunc(pageIndex), Math.max(0, Math.trunc(retryCount))];
+        })
+        .filter(Boolean)
+    : [];
+  out.inFlightPages = Array.isArray(src.inFlightPages)
+    ? src.inFlightPages
+        .map((x) => parseInt(x, 10))
+        .filter(Number.isFinite)
+        .map((x) => Math.trunc(x))
+    : [];
+  out.seenProblemIds = Array.isArray(src.seenProblemIds)
+    ? src.seenProblemIds.map((x) => parseInt(x, 10)).filter(Number.isFinite)
+    : [];
+
+  const stats = src.stats && typeof src.stats === 'object' ? src.stats : {};
+  out.stats = {
+    solved: Number.isFinite(stats.solved) ? stats.solved : 0,
+    tried: Number.isFinite(stats.tried) ? stats.tried : 0,
+    unattempted: Number.isFinite(stats.unattempted) ? stats.unattempted : 0,
+    total: Number.isFinite(stats.total) ? stats.total : 0,
+    pages: Number.isFinite(stats.pages) ? stats.pages : 0,
+    missing: Number.isFinite(stats.missing) ? stats.missing : 0,
+    forbidden: Number.isFinite(stats.forbidden) ? stats.forbidden : 0,
+  };
+
+  if (!Array.isArray(out.problems)) out.problems = [];
+  if (!Number.isFinite(out.resumeFromPage))
+    out.resumeFromPage = computeResumeFromStateSnapshot(out);
+  return out;
+}
+
+function extractSnapshotFromImport(rawPayload) {
+  if (!rawPayload || typeof rawPayload !== 'object') return null;
+  if (rawPayload.type === 'pbinfo-get-unsolved-snapshot' && rawPayload.state) {
+    return migrateStateSnapshotToV2(rawPayload.state);
+  }
+  return migrateStateSnapshotToV2(rawPayload);
+}
+
 function csvEscape(value) {
   if (value == null) return '';
   const s = String(value);
@@ -493,6 +615,10 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       parseTotalProblems,
       normalizeListUrl,
       buildPageUrl,
+      computeBackoffWithJitter,
+      nextAdaptiveThrottleState,
+      migrateStateSnapshotToV2,
+      extractSnapshotFromImport,
       problemsToCsv,
       problemsToLinksText,
       problemsToIdsText,
@@ -505,7 +631,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     };
   }
 } else {
-  (function () {
+  function runPbinfoGetUnsolved() {
     // restore console
     var iFrame = document.createElement('iframe');
     iFrame.style.display = 'none';
@@ -514,7 +640,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     console.clear();
 
     const STORAGE_NAMESPACE = 'pbinfo-get-unsolved';
-    const STATE_STORAGE_VERSION = 1;
+    const STATE_STORAGE_VERSION = 2;
+    const LEGACY_STATE_STORAGE_VERSION = 1;
     const THEME_STORAGE_KEY = `${STORAGE_NAMESPACE}:theme`;
 
     function safeJsonParse(value) {
@@ -536,14 +663,54 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       return (h >>> 0).toString(16).padStart(8, '0');
     }
 
-    function makeStateKeys(pageLink) {
+    function makeStateKeys(pageLink, version = STATE_STORAGE_VERSION) {
       const h = fnv1a32(pageLink);
       return {
-        full: `${STORAGE_NAMESPACE}:state:v${STATE_STORAGE_VERSION}:${h}`,
-        minimal: `${STORAGE_NAMESPACE}:state-min:v${STATE_STORAGE_VERSION}:${h}`,
-        index: `${STORAGE_NAMESPACE}:state-index:v${STATE_STORAGE_VERSION}:${h}`,
-        itemPrefix: `${STORAGE_NAMESPACE}:state-item:v${STATE_STORAGE_VERSION}:${h}:`,
+        full: `${STORAGE_NAMESPACE}:state:v${version}:${h}`,
+        minimal: `${STORAGE_NAMESPACE}:state-min:v${version}:${h}`,
+        index: `${STORAGE_NAMESPACE}:state-index:v${version}:${h}`,
+        itemPrefix: `${STORAGE_NAMESPACE}:state-item:v${version}:${h}:`,
       };
+    }
+
+    function classifyStorageError(err) {
+      if (!err) return 'unknown';
+      if (err.name === 'QuotaExceededError' || err.code === 22 || err.code === 1014) {
+        return 'quota';
+      }
+      return 'unknown';
+    }
+
+    function storageGetJson(keys) {
+      const list = Array.isArray(keys) ? keys : [keys];
+      for (const key of list) {
+        if (!key) continue;
+        try {
+          const parsed = safeJsonParse(localStorage.getItem(key));
+          if (parsed && typeof parsed === 'object') return parsed;
+        } catch {}
+      }
+      return null;
+    }
+
+    function storageSetJson(key, value) {
+      if (!key) return { ok: false, errorType: 'unknown' };
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+        return { ok: true, errorType: null };
+      } catch (err) {
+        return { ok: false, errorType: classifyStorageError(err) };
+      }
+    }
+
+    function storageRemove(keys) {
+      const list = Array.isArray(keys) ? keys : [keys];
+      for (const key of list) {
+        if (!key) continue;
+        try {
+          localStorage.removeItem(key);
+        } catch {}
+      }
     }
 
     function formatDateTime(ts) {
@@ -622,6 +789,20 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           ? Number(window.PBINFO_GET_UNSOLVED_DELAY_MS)
           : 0
       ),
+      adaptiveThrottle: window.PBINFO_GET_UNSOLVED_ADAPTIVE_THROTTLE !== false,
+      backoffBaseMs: Math.max(
+        50,
+        Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_BACKOFF_BASE_MS))
+          ? Number(window.PBINFO_GET_UNSOLVED_BACKOFF_BASE_MS)
+          : 500
+      ),
+      backoffCapMs: Math.max(
+        250,
+        Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_BACKOFF_CAP_MS))
+          ? Number(window.PBINFO_GET_UNSOLVED_BACKOFF_CAP_MS)
+          : 15000
+      ),
+      backoffJitter: window.PBINFO_GET_UNSOLVED_BACKOFF_JITTER !== false,
       timeoutMs: Math.max(
         1000,
         Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_TIMEOUT_MS))
@@ -646,7 +827,68 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           ? Number(window.PBINFO_GET_UNSOLVED_MAX_PAGES)
           : 5000
       ),
+      tableRenderChunkSize: Math.max(
+        25,
+        Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_RENDER_CHUNK_SIZE))
+          ? Number(window.PBINFO_GET_UNSOLVED_RENDER_CHUNK_SIZE)
+          : 150
+      ),
+      virtualizeRows: window.PBINFO_GET_UNSOLVED_VIRTUALIZE_ROWS === true,
+      virtualRowsLimit: Math.max(
+        100,
+        Number.isFinite(Number(window.PBINFO_GET_UNSOLVED_VIRTUAL_ROWS_LIMIT))
+          ? Number(window.PBINFO_GET_UNSOLVED_VIRTUAL_ROWS_LIMIT)
+          : 1200
+      ),
     };
+
+    const adaptiveThrottleState = {
+      enabled: Boolean(config.adaptiveThrottle),
+      baseDelayMs: config.delayMs,
+      baseConcurrency: config.concurrency,
+      delayMs: config.delayMs,
+      concurrency: config.concurrency,
+      cleanStreak: 0,
+    };
+
+    function getEffectiveDelayMs() {
+      return adaptiveThrottleState.enabled
+        ? Math.max(config.delayMs, adaptiveThrottleState.delayMs)
+        : config.delayMs;
+    }
+
+    function getEffectiveConcurrency() {
+      return adaptiveThrottleState.enabled
+        ? Math.max(1, Math.min(config.concurrency, adaptiveThrottleState.concurrency))
+        : config.concurrency;
+    }
+
+    function computeBackoffDelay(attempt) {
+      return computeBackoffWithJitter(attempt, {
+        baseMs: config.backoffBaseMs,
+        capMs: config.backoffCapMs,
+        jitter: config.backoffJitter,
+      });
+    }
+
+    function getRetryDelayMs(retryCount) {
+      const retryDelay = computeBackoffDelay(retryCount);
+      return Math.max(retryDelay, getEffectiveDelayMs());
+    }
+
+    function noteAdaptiveFailure(kind) {
+      const next = nextAdaptiveThrottleState(adaptiveThrottleState, kind, {
+        capMs: config.backoffCapMs,
+      });
+      Object.assign(adaptiveThrottleState, next);
+    }
+
+    function noteAdaptiveSuccess() {
+      const next = nextAdaptiveThrottleState(adaptiveThrottleState, 'success', {
+        capMs: config.backoffCapMs,
+      });
+      Object.assign(adaptiveThrottleState, next);
+    }
 
     function normalizeScanMode(value) {
       const v = normalizeForMatch(value || '');
@@ -747,27 +989,14 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       }
     }
 
-    const stateKeys = makeStateKeys(pageLink);
-    const savedFull = safeJsonParse(
-      (() => {
-        try {
-          return localStorage.getItem(stateKeys.full);
-        } catch {
-          return null;
-        }
-      })()
+    const stateKeys = makeStateKeys(pageLink, STATE_STORAGE_VERSION);
+    const legacyStateKeys = makeStateKeys(pageLink, LEGACY_STATE_STORAGE_VERSION);
+    const savedFull = migrateStateSnapshotToV2(
+      storageGetJson([stateKeys.full, legacyStateKeys.full])
     );
     const savedMinimal =
       savedFull == null
-        ? safeJsonParse(
-            (() => {
-              try {
-                return localStorage.getItem(stateKeys.minimal);
-              } catch {
-                return null;
-              }
-            })()
-          )
+        ? migrateStateSnapshotToV2(storageGetJson([stateKeys.minimal, legacyStateKeys.minimal]))
         : null;
 
     let pendingRestore = null;
@@ -941,6 +1170,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         #${UI_ROOT_ID} #${UI_ID_CONTROLS} label{display:flex;gap:0.4em;align-items:center;user-select:none;}
         #${UI_ROOT_ID} #${UI_ID_CONTROLS} input[type="checkbox"]{accent-color:var(--link);}
         #${UI_ROOT_ID} #${UI_ID_CONTROLS} input[type="number"]{width:8em;border:1px solid var(--border);border-radius:0.45em;padding:0.2em 0.35em;background:var(--bg);color:var(--text);}
+        #${UI_ROOT_ID} #${UI_ID_CONTROLS} input[type="search"]{width:12em;border:1px solid var(--border);border-radius:0.45em;padding:0.2em 0.35em;background:var(--bg);color:var(--text);}
         #${UI_ROOT_ID} #${UI_ID_CONTROLS} select{width:12em;border:1px solid var(--border);border-radius:0.45em;padding:0.25em 0.35em;background:var(--bg);color:var(--text);}
         #${UI_ROOT_ID} #${UI_ID_CONTROLS} button{padding:0.35em 0.65em;border:1px solid var(--border);border-radius:0.45em;background:transparent;color:var(--text);}
         #${UI_ROOT_ID} #${UI_ID_CONTROLS} button:hover{background:var(--btn-hover);}
@@ -1105,9 +1335,14 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     async function copyTextToClipboard(text) {
       const value = String(text || '');
+      let clipboardApiError = null;
       if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(value);
-        return;
+        try {
+          await navigator.clipboard.writeText(value);
+          return { method: 'clipboard-api' };
+        } catch (err) {
+          clipboardApiError = err;
+        }
       }
       const ta = document.createElement('textarea');
       ta.value = value;
@@ -1120,7 +1355,26 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       ta.select();
       const ok = document.execCommand('copy');
       ta.remove();
-      if (!ok) throw new Error('Clipboard copy failed');
+      if (ok) return { method: 'execCommand', clipboardApiError };
+
+      const error = new Error('Clipboard copy failed');
+      error.code = 'clipboard-copy-failed';
+      error.clipboardApiError = clipboardApiError;
+      error.isSecureContext = Boolean(window.isSecureContext);
+      throw error;
+    }
+
+    function describeClipboardError(err) {
+      if (err?.isSecureContext === false) {
+        return 'Context nesecurizat: Clipboard API modern cere HTTPS.';
+      }
+      if (err?.clipboardApiError?.name === 'NotAllowedError') {
+        return 'Permisiune clipboard respinsă. Fă click în pagină și încearcă din nou.';
+      }
+      if (navigator?.clipboard?.writeText && window.isSecureContext) {
+        return 'Browserul a blocat accesul la clipboard. Încearcă din nou după interacțiune.';
+      }
+      return 'Clipboard indisponibil; folosește exportul și copiere manuală.';
     }
 
     const allProblems = [];
@@ -1141,6 +1395,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       includeUnknownScore: true,
       scoreMin: null,
       scoreMax: null,
+      searchQuery: '',
     };
 
     const listDiv = document.createElement('div');
@@ -1150,6 +1405,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     table.style.width = '75%';
     table.style.minWidth = '450px';
     table.style.maxWidth = '1050px';
+    let tableRenderToken = 0;
 
     function ensureResultsAttached() {
       if (!table.isConnected) appRoot.appendChild(table);
@@ -1200,9 +1456,15 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       const max = Number.isFinite(filterState.scoreMax) ? filterState.scoreMax : null;
       const includeUnknown = Boolean(filterState.includeUnknownScore);
       const statuses = filterState.statuses;
+      const query = normalizeForMatch(filterState.searchQuery || '');
 
       return allProblems.filter((p) => {
         if (!statuses.has(p.status)) return false;
+        if (query) {
+          const idText = Number.isFinite(p.id) ? String(p.id) : '';
+          const nameText = normalizeForMatch(p.name || '');
+          if (!idText.includes(query) && !nameText.includes(query)) return false;
+        }
         const scoreKnown = p.userScore != null && Number.isFinite(p.userScore);
         if (!scoreKnown) return includeUnknown;
         if (min != null && p.userScore < min) return false;
@@ -1402,7 +1664,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       }
       updateProgress(inFlight);
       if (!paused) {
-        for (let i = 0; i < config.concurrency; i++) schedule(kick);
+        for (let i = 0; i < getEffectiveConcurrency(); i++) schedule(kick);
       }
     }
 
@@ -1482,6 +1744,23 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       unknownLabel.appendChild(document.createTextNode(' include scor necunoscut'));
       groupScore.appendChild(unknownLabel);
 
+      const groupSearch = document.createElement('div');
+      groupSearch.className = 'group';
+      groupSearch.innerHTML = '<b>Căutare</b>';
+
+      const searchLabel = document.createElement('label');
+      searchLabel.textContent = 'ID / nume';
+      const searchInput = document.createElement('input');
+      searchInput.type = 'search';
+      searchInput.placeholder = 'ex: 123 sau graf';
+      searchInput.value = filterState.searchQuery;
+      searchInput.addEventListener('input', () => {
+        filterState.searchQuery = searchInput.value || '';
+        requestRenderResults();
+      });
+      searchLabel.appendChild(searchInput);
+      groupSearch.appendChild(searchLabel);
+
       const groupAppearance = document.createElement('div');
       groupAppearance.className = 'group';
       groupAppearance.innerHTML = '<b>Aspect</b>';
@@ -1555,10 +1834,16 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           return;
         }
         try {
-          await copyTextToClipboard(text);
-          addLog(`Am copiat ${visible.length} link-uri în clipboard.`);
+          const res = await copyTextToClipboard(text);
+          if (res?.method === 'execCommand') {
+            addLog(`Am copiat ${visible.length} link-uri în clipboard (fallback legacy copy).`);
+          } else {
+            addLog(`Am copiat ${visible.length} link-uri în clipboard.`);
+          }
         } catch (err) {
-          addLog('<span style="color:#b30000;">Nu am putut copia link-urile în clipboard.</span>');
+          addLog(
+            `<span style="color:#b30000;">Nu am putut copia link-urile în clipboard. ${describeClipboardError(err)}</span>`
+          );
           console.error(err);
         }
       });
@@ -1574,10 +1859,16 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           return;
         }
         try {
-          await copyTextToClipboard(text);
-          addLog(`Am copiat ${visible.length} ID-uri în clipboard.`);
+          const res = await copyTextToClipboard(text);
+          if (res?.method === 'execCommand') {
+            addLog(`Am copiat ${visible.length} ID-uri în clipboard (fallback legacy copy).`);
+          } else {
+            addLog(`Am copiat ${visible.length} ID-uri în clipboard.`);
+          }
         } catch (err) {
-          addLog('<span style="color:#b30000;">Nu am putut copia ID-urile în clipboard.</span>');
+          addLog(
+            `<span style="color:#b30000;">Nu am putut copia ID-urile în clipboard. ${describeClipboardError(err)}</span>`
+          );
           console.error(err);
         }
       });
@@ -1593,10 +1884,18 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           return;
         }
         try {
-          await copyTextToClipboard(text);
-          addLog(`Am copiat ${visible.length} rânduri Markdown în clipboard.`);
+          const res = await copyTextToClipboard(text);
+          if (res?.method === 'execCommand') {
+            addLog(
+              `Am copiat ${visible.length} rânduri Markdown în clipboard (fallback legacy copy).`
+            );
+          } else {
+            addLog(`Am copiat ${visible.length} rânduri Markdown în clipboard.`);
+          }
         } catch (err) {
-          addLog('<span style="color:#b30000;">Nu am putut copia Markdown în clipboard.</span>');
+          addLog(
+            `<span style="color:#b30000;">Nu am putut copia Markdown în clipboard. ${describeClipboardError(err)}</span>`
+          );
           console.error(err);
         }
       });
@@ -1618,7 +1917,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         const label = prompt('Etichetă snapshot (opțional):', '');
         if (label === null) return;
         // update "latest" state too (for quick restore)
-        saveScanState({ mode: 'minimal', reason: 'manual', silent: true });
+        saveScanState({ mode: 'full', reason: 'manual', silent: true });
         const res = saveSnapshotItem({
           mode: 'full',
           label: normalizeSpace(label),
@@ -1653,8 +1952,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         if (!ok) return;
         const selected = normalizeSpace(stateSelect.value);
         if (selected.startsWith('snapshot:')) {
-          const id = selected.slice('snapshot:'.length);
-          const state = loadSnapshotItem(id);
+          const [storageVersionRaw, id] = selected.slice('snapshot:'.length).split(':');
+          const storageVersion = parseInt(storageVersionRaw, 10);
+          const state = loadSnapshotItem(id, storageVersion);
           if (!state) {
             addLog('Snapshot inexistent (probabil șters).');
             refreshSessionInfo();
@@ -1686,7 +1986,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         );
         if (!ok) return;
         if (selected.startsWith('snapshot:')) {
-          const id = selected.slice('snapshot:'.length);
+          const [, id] = selected.slice('snapshot:'.length).split(':');
           deleteSnapshotItem(id);
           addLog('Snapshot șters.');
         } else {
@@ -1696,6 +1996,93 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         refreshSessionInfo();
       });
       groupSession.appendChild(clearStateBtn);
+
+      const exportStateBtn = document.createElement('button');
+      exportStateBtn.textContent = 'Export JSON';
+      exportStateBtn.addEventListener('click', () => {
+        const selected = normalizeSpace(stateSelect.value);
+        let state = null;
+        let source = 'autosave';
+        if (selected.startsWith('snapshot:')) {
+          const [storageVersionRaw, id] = selected.slice('snapshot:'.length).split(':');
+          const storageVersion = parseInt(storageVersionRaw, 10);
+          state = loadSnapshotItem(id, storageVersion);
+          source = `snapshot:${id}`;
+        } else {
+          state = loadSavedStateForLink()?.state || null;
+        }
+        if (!state) {
+          addLog('<span style="color:#b30000;">Nu am găsit nicio stare de exportat.</span>');
+          return;
+        }
+        const payload = {
+          type: 'pbinfo-get-unsolved-snapshot',
+          exportVersion: 1,
+          exportedAt: Date.now(),
+          source,
+          state: migrateStateSnapshotToV2(state),
+        };
+        downloadText(
+          `pbinfo-state-${Date.now()}.json`,
+          JSON.stringify(payload, null, 2),
+          'application/json;charset=utf-8'
+        );
+        addLog('Snapshot exportat în fișier JSON.');
+      });
+      groupSession.appendChild(exportStateBtn);
+
+      const importStateInput = document.createElement('input');
+      importStateInput.type = 'file';
+      importStateInput.accept = 'application/json,.json';
+      importStateInput.style.display = 'none';
+      groupSession.appendChild(importStateInput);
+
+      const importStateBtn = document.createElement('button');
+      importStateBtn.textContent = 'Import JSON';
+      importStateBtn.addEventListener('click', () => {
+        importStateInput.click();
+      });
+      importStateInput.addEventListener('change', async () => {
+        const file = importStateInput.files?.[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const parsed = safeJsonParse(text);
+          const imported = extractSnapshotFromImport(parsed);
+          if (!imported) {
+            addLog(
+              '<span style="color:#b30000;">Fișier JSON invalid pentru import snapshot.</span>'
+            );
+            return;
+          }
+
+          if (imported.pageLink && imported.pageLink !== pageLink) {
+            const ok = confirm(
+              `Snapshot-ul este pentru alt link:\n${imported.pageLink}\n\nVrei să-l remapezi pe link-ul curent?\n${pageLink}`
+            );
+            if (!ok) return;
+          }
+
+          imported.pageLink = pageLink;
+          const labelFromFile = normalizeSpace(imported.label || file.name.replace(/\.[^.]+$/, ''));
+          const res = saveImportedSnapshot(imported, { label: labelFromFile || 'import' });
+          if (!res.ok) {
+            addLog(
+              '<span style="color:#b30000;">Import eșuat: nu am putut salva snapshot-ul.</span>'
+            );
+            refreshSessionInfo();
+            return;
+          }
+          addLog(`Snapshot importat (${res.storageLevel}).`);
+          refreshSessionInfo();
+        } catch (err) {
+          addLog('<span style="color:#b30000;">Import eșuat: fișierul nu a putut fi citit.</span>');
+          console.error(err);
+        } finally {
+          importStateInput.value = '';
+        }
+      });
+      groupSession.appendChild(importStateBtn);
 
       const sessionInfo = document.createElement('div');
       sessionInfo.className = 'muted';
@@ -1734,8 +2121,8 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
                 : 'compact';
           const lbl = normalizeSpace(s.label);
           options.push({
-            value: `snapshot:${s.id}`,
-            label: `Snapshot (${level}) · ${savedAt}${lbl ? ` · ${lbl}` : ''}`,
+            value: `snapshot:${s.storageVersion || STATE_STORAGE_VERSION}:${s.id}`,
+            label: `Snapshot v${s.storageVersion || STATE_STORAGE_VERSION} (${level}) · ${savedAt}${lbl ? ` · ${lbl}` : ''}`,
             state: null,
             kind: s.storageLevel === 'full' ? 'full' : 'minimal',
           });
@@ -1749,6 +2136,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           stateSelect.disabled = true;
           loadStateBtn.disabled = true;
           clearStateBtn.disabled = true;
+          exportStateBtn.disabled = true;
           sessionInfo.textContent = 'Nicio stare salvată.';
           return;
         }
@@ -1768,6 +2156,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
         loadStateBtn.disabled = false;
         clearStateBtn.disabled = false;
+        exportStateBtn.disabled = false;
         sessionInfo.textContent = `Stări salvate: ${options.length}.`;
       }
 
@@ -1803,6 +2192,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       controlsDiv.replaceChildren(
         groupStatus,
         groupScore,
+        groupSearch,
         groupAppearance,
         groupExport,
         groupSession,
@@ -1827,6 +2217,9 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       const pauseText = paused ? ' · pauză' : '';
       const inflightText = inFlight > 0 ? ` · în lucru ${inFlight}` : '';
       const startText = scanStart > 1 ? ` (de la ${scanStart})` : '';
+      const adaptiveText = adaptiveThrottleState.enabled
+        ? ` · throttle delay=${getEffectiveDelayMs()}ms concurență=${getEffectiveConcurrency()}`
+        : '';
 
       if (scanMode === 'id-range') {
         const done = stats.pages;
@@ -1841,7 +2234,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         const forbiddenText = stats.forbidden > 0 ? ` · 403 ${stats.forbidden}` : '';
         progressDiv.textContent = `Progres: ID-uri ${idsText}, probleme ${stats.total} (găsite)${missingText} · timp ${formatDuration(
           elapsedMs
-        )}${etaText}${pauseText}${inflightText}${startText}${forbiddenText}`;
+        )}${etaText}${adaptiveText}${pauseText}${inflightText}${startText}${forbiddenText}`;
         return;
       }
 
@@ -1872,7 +2265,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
       progressDiv.textContent = `Progres: pagini ${pagesText}, probleme ${probsText} · timp ${formatDuration(
         elapsedMs
-      )}${etaText}${pauseText}${inflightText}${startText}`;
+      )}${etaText}${adaptiveText}${pauseText}${inflightText}${startText}`;
     }
 
     setupControls();
@@ -1902,6 +2295,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         return '6c757d';
       }
 
+      const renderToken = ++tableRenderToken;
       table.replaceChildren();
       const thead = document.createElement('thead');
       const tbody = document.createElement('tbody');
@@ -1936,8 +2330,22 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       }
       thead.appendChild(headRow);
 
-      const list = Array.isArray(visibleProblems) ? visibleProblems : getVisibleProblems();
-      list.forEach((p, i) => {
+      const listAll = Array.isArray(visibleProblems) ? visibleProblems : getVisibleProblems();
+      const chunkSize = Math.max(
+        25,
+        Number.isFinite(config.tableRenderChunkSize) ? config.tableRenderChunkSize : 150
+      );
+      const shouldVirtualize =
+        config.virtualizeRows &&
+        Number.isFinite(config.virtualRowsLimit) &&
+        listAll.length > config.virtualRowsLimit;
+      const list = shouldVirtualize ? listAll.slice(0, config.virtualRowsLimit) : listAll;
+      const scheduleChunk =
+        typeof window.requestAnimationFrame === 'function'
+          ? window.requestAnimationFrame.bind(window)
+          : (fn) => setTimeout(fn, 16);
+
+      const buildRow = (p, i) => {
         const row = document.createElement('tr');
 
         const tdCnt = document.createElement('td');
@@ -2002,8 +2410,36 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         tdSource.textContent = p.source || '';
         row.appendChild(tdSource);
 
-        tbody.appendChild(row);
-      });
+        return row;
+      };
+
+      let idx = 0;
+      const renderChunk = () => {
+        if (renderToken !== tableRenderToken) return;
+        const frag = document.createDocumentFragment();
+        const end = Math.min(list.length, idx + chunkSize);
+        for (; idx < end; idx++) {
+          frag.appendChild(buildRow(list[idx], idx));
+        }
+        tbody.appendChild(frag);
+
+        if (idx < list.length) {
+          scheduleChunk(renderChunk);
+          return;
+        }
+
+        if (shouldVirtualize) {
+          const row = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = headerDefs.length;
+          td.className = 'muted';
+          td.textContent = `Virtualizare activă: afișez primele ${list.length} din ${listAll.length} rânduri. Filtrează/caută pentru restul.`;
+          row.appendChild(td);
+          tbody.appendChild(row);
+        }
+      };
+
+      renderChunk();
     }
 
     function finishScan({ complete, reason }) {
@@ -2097,34 +2533,50 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     let lastAutosaveAt = 0;
     let lastAutosavePages = 0;
     let autosaveDisabled = false;
+    const storagePolicy = {
+      progressOnly: false,
+      lastErrorType: null,
+    };
+    let storageWarned = false;
+
+    function noteStorageFailure(errorType, contextLabel) {
+      storagePolicy.lastErrorType = errorType || 'unknown';
+      if (errorType === 'quota') storagePolicy.progressOnly = true;
+      if (storageWarned) return;
+      storageWarned = true;
+      const reason =
+        errorType === 'quota'
+          ? 'spațiu localStorage insuficient (quota)'
+          : 'scriere localStorage eșuată';
+      addLog(
+        `<span style="color:#b35c00;"><b>Stocare:</b> ${reason}${contextLabel ? ` (${contextLabel})` : ''}. Continui în mod degradat.</span>`
+      );
+    }
 
     function loadSavedStateForLink() {
-      const read = (key) => {
-        try {
-          return safeJsonParse(localStorage.getItem(key));
-        } catch {
-          return null;
-        }
-      };
-      const full = read(stateKeys.full);
+      const full = migrateStateSnapshotToV2(storageGetJson([stateKeys.full, legacyStateKeys.full]));
       if (full && full.pageLink === pageLink) return { kind: 'full', state: full };
-      const minimal = read(stateKeys.minimal);
+      const minimal = migrateStateSnapshotToV2(
+        storageGetJson([stateKeys.minimal, legacyStateKeys.minimal])
+      );
       if (minimal && minimal.pageLink === pageLink) return { kind: 'minimal', state: minimal };
       return null;
     }
 
     function clearSavedStateForLink() {
-      try {
-        localStorage.removeItem(stateKeys.full);
-      } catch {}
-      try {
-        localStorage.removeItem(stateKeys.minimal);
-      } catch {}
+      storageRemove([
+        stateKeys.full,
+        stateKeys.minimal,
+        legacyStateKeys.full,
+        legacyStateKeys.minimal,
+      ]);
     }
 
-    function snapshotItemKey(id) {
+    function snapshotItemKey(id, storageVersion = STATE_STORAGE_VERSION) {
       const key = normalizeSpace(id);
-      return key ? `${stateKeys.itemPrefix}${key}` : null;
+      if (!key) return null;
+      const keys = storageVersion === LEGACY_STATE_STORAGE_VERSION ? legacyStateKeys : stateKeys;
+      return `${keys.itemPrefix}${key}`;
     }
 
     function normalizeSnapshotIndex(index) {
@@ -2141,52 +2593,67 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             ? item.storageLevel
             : 'minimal';
         const label = typeof item?.label === 'string' ? item.label : '';
-        out.push({ id, savedAt: Number.isFinite(savedAt) ? savedAt : null, storageLevel, label });
+        const storageVersion =
+          Number(item?.storageVersion) === LEGACY_STATE_STORAGE_VERSION
+            ? LEGACY_STATE_STORAGE_VERSION
+            : STATE_STORAGE_VERSION;
+        out.push({
+          id,
+          savedAt: Number.isFinite(savedAt) ? savedAt : null,
+          storageLevel,
+          label,
+          storageVersion,
+        });
       }
       out.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
       return out;
     }
 
     function loadSnapshotIndexForLink() {
-      try {
-        const v = safeJsonParse(localStorage.getItem(stateKeys.index));
-        return normalizeSnapshotIndex(v);
-      } catch {
-        return [];
+      const current = normalizeSnapshotIndex(storageGetJson(stateKeys.index)).map((entry) => ({
+        ...entry,
+        storageVersion: STATE_STORAGE_VERSION,
+      }));
+      const legacy = normalizeSnapshotIndex(storageGetJson(legacyStateKeys.index)).map((entry) => ({
+        ...entry,
+        storageVersion: LEGACY_STATE_STORAGE_VERSION,
+      }));
+      const byId = new Map();
+      for (const entry of [...current, ...legacy]) {
+        if (!byId.has(entry.id)) byId.set(entry.id, entry);
       }
+      return normalizeSnapshotIndex(Array.from(byId.values()));
     }
 
     function writeSnapshotIndexForLink(index) {
-      try {
-        localStorage.setItem(stateKeys.index, JSON.stringify(normalizeSnapshotIndex(index)));
-        return true;
-      } catch {
-        return false;
-      }
+      const normalized = normalizeSnapshotIndex(index);
+      return storageSetJson(stateKeys.index, normalized);
     }
 
-    function loadSnapshotItem(id) {
-      const key = snapshotItemKey(id);
-      if (!key) return null;
-      try {
-        const v = safeJsonParse(localStorage.getItem(key));
-        return v && v.pageLink === pageLink ? v : null;
-      } catch {
-        return null;
+    function loadSnapshotItem(id, storageVersion = null) {
+      const versions = Number(storageVersion)
+        ? [Number(storageVersion)]
+        : [STATE_STORAGE_VERSION, LEGACY_STATE_STORAGE_VERSION];
+      for (const version of versions) {
+        const key = snapshotItemKey(id, version);
+        if (!key) continue;
+        const v = migrateStateSnapshotToV2(storageGetJson(key));
+        if (v && v.pageLink === pageLink) return v;
       }
+      return null;
     }
 
     function deleteSnapshotItem(id) {
-      const key = snapshotItemKey(id);
-      if (!key) return false;
-      try {
-        localStorage.removeItem(key);
-        const idx = loadSnapshotIndexForLink().filter((x) => x.id !== id);
-        writeSnapshotIndexForLink(idx);
-        return true;
-      } catch {
+      const keyCurrent = snapshotItemKey(id, STATE_STORAGE_VERSION);
+      const keyLegacy = snapshotItemKey(id, LEGACY_STATE_STORAGE_VERSION);
+      storageRemove([keyCurrent, keyLegacy]);
+      const idx = loadSnapshotIndexForLink().filter((x) => x.id !== id);
+      const writeRes = writeSnapshotIndexForLink(idx);
+      if (!writeRes.ok) {
+        noteStorageFailure(writeRes.errorType, 'index');
         return false;
       }
+      return true;
     }
 
     function pruneSnapshotIndex(index) {
@@ -2194,7 +2661,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       const list = normalizeSnapshotIndex(index);
       const pruned = [];
       for (const entry of list) {
-        const key = snapshotItemKey(entry.id);
+        const key = snapshotItemKey(entry.id, entry.storageVersion);
         if (!key) continue;
         try {
           if (localStorage.getItem(key) == null) continue;
@@ -2205,44 +2672,124 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       const keep = new Set(pruned.map((x) => x.id));
       for (const entry of list) {
         if (keep.has(entry.id)) continue;
-        const key = snapshotItemKey(entry.id);
+        const key = snapshotItemKey(entry.id, entry.storageVersion);
         if (!key) continue;
-        try {
-          localStorage.removeItem(key);
-        } catch {}
+        storageRemove(key);
       }
       return pruned;
     }
 
     function saveSnapshotItem({ mode, label, reason } = {}) {
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      const key = snapshotItemKey(id);
+      const key = snapshotItemKey(id, STATE_STORAGE_VERSION);
       if (!key) return { ok: false, id: null, storageLevel: null };
 
       const desired = mode === 'minimal' || mode === 'progress' ? mode : 'full';
       const levels = desired === 'full' ? ['full', 'minimal', 'progress'] : ['minimal', 'progress'];
 
       for (const level of levels) {
-        try {
-          const snap = buildStateSnapshot(level, reason || 'snapshot');
-          if (label) snap.label = String(label);
-          localStorage.setItem(key, JSON.stringify(snap));
+        const snap = buildStateSnapshot(level, reason || 'snapshot');
+        if (label) snap.label = String(label);
+        const writeSnapshotRes = storageSetJson(key, snap);
+        if (!writeSnapshotRes.ok) {
+          noteStorageFailure(writeSnapshotRes.errorType, 'snapshot');
+          continue;
+        }
 
-          const idx = pruneSnapshotIndex([
-            { id, savedAt: snap.savedAt, storageLevel: snap.storageLevel, label: snap.label || '' },
-            ...loadSnapshotIndexForLink(),
-          ]);
-          if (!writeSnapshotIndexForLink(idx)) {
-            localStorage.removeItem(key);
-            return { ok: false, id: null, storageLevel: null };
-          }
-          return { ok: true, id, storageLevel: snap.storageLevel };
-        } catch {}
+        const idx = pruneSnapshotIndex([
+          {
+            id,
+            savedAt: snap.savedAt,
+            storageLevel: snap.storageLevel,
+            label: snap.label || '',
+            storageVersion: STATE_STORAGE_VERSION,
+          },
+          ...loadSnapshotIndexForLink(),
+        ]);
+        const writeIdxRes = writeSnapshotIndexForLink(idx);
+        if (!writeIdxRes.ok) {
+          storageRemove(key);
+          noteStorageFailure(writeIdxRes.errorType, 'index');
+          return { ok: false, id: null, storageLevel: null };
+        }
+        return { ok: true, id, storageLevel: snap.storageLevel };
       }
 
-      try {
-        localStorage.removeItem(key);
-      } catch {}
+      storageRemove(key);
+      return { ok: false, id: null, storageLevel: null };
+    }
+
+    function projectSnapshotForLevel(snapshot, level) {
+      const migrated = migrateStateSnapshotToV2(snapshot);
+      if (!migrated) return null;
+      const projectedLevel =
+        level === 'full' || level === 'minimal' || level === 'progress' ? level : 'minimal';
+      const out = {
+        ...migrated,
+        version: STATE_STORAGE_VERSION,
+        schemaVersion: STATE_STORAGE_VERSION,
+        storageLevel: projectedLevel,
+        pageLink,
+      };
+      if (projectedLevel === 'progress') {
+        delete out.problems;
+      } else {
+        const inputProblems = Array.isArray(migrated.problems) ? migrated.problems : [];
+        out.problems = inputProblems.map((p) => serializeProblemForSnapshot(p, projectedLevel));
+      }
+      if (!Array.isArray(out.seenProblemIds)) out.seenProblemIds = [];
+      out.resumeFromPage = computeResumeFromStateSnapshot(out);
+      return out;
+    }
+
+    function saveImportedSnapshot(snapshot, { label } = {}) {
+      const migrated = migrateStateSnapshotToV2(snapshot);
+      if (!migrated) return { ok: false, id: null, storageLevel: null };
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const key = snapshotItemKey(id, STATE_STORAGE_VERSION);
+      if (!key) return { ok: false, id: null, storageLevel: null };
+
+      const desired =
+        migrated.storageLevel === 'full' ||
+        migrated.storageLevel === 'minimal' ||
+        migrated.storageLevel === 'progress'
+          ? migrated.storageLevel
+          : 'minimal';
+      const levels =
+        desired === 'full'
+          ? ['full', 'minimal', 'progress']
+          : desired === 'minimal'
+            ? ['minimal', 'progress']
+            : ['progress'];
+      for (const level of levels) {
+        const snap = projectSnapshotForLevel(migrated, level);
+        if (!snap) continue;
+        snap.savedAt = Date.now();
+        if (label) snap.label = String(label);
+        const writeSnapshotRes = storageSetJson(key, snap);
+        if (!writeSnapshotRes.ok) {
+          noteStorageFailure(writeSnapshotRes.errorType, 'import');
+          continue;
+        }
+        const idx = pruneSnapshotIndex([
+          {
+            id,
+            savedAt: snap.savedAt,
+            storageLevel: snap.storageLevel,
+            label: snap.label || '',
+            storageVersion: STATE_STORAGE_VERSION,
+          },
+          ...loadSnapshotIndexForLink(),
+        ]);
+        const writeIdxRes = writeSnapshotIndexForLink(idx);
+        if (!writeIdxRes.ok) {
+          storageRemove(key);
+          noteStorageFailure(writeIdxRes.errorType, 'index');
+          return { ok: false, id: null, storageLevel: null };
+        }
+        return { ok: true, id, storageLevel: snap.storageLevel };
+      }
+      storageRemove(key);
       return { ok: false, id: null, storageLevel: null };
     }
 
@@ -2252,6 +2799,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         includeUnknownScore: Boolean(filterState.includeUnknownScore),
         scoreMin: Number.isFinite(filterState.scoreMin) ? filterState.scoreMin : null,
         scoreMax: Number.isFinite(filterState.scoreMax) ? filterState.scoreMax : null,
+        searchQuery: typeof filterState.searchQuery === 'string' ? filterState.searchQuery : '',
       };
     }
 
@@ -2263,6 +2811,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       const now = Date.now();
       const snapshot = {
         version: STATE_STORAGE_VERSION,
+        schemaVersion: STATE_STORAGE_VERSION,
         storageLevel: level,
         savedAt: now,
         scanMode,
@@ -2302,43 +2851,38 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     function saveScanState({ mode, reason, silent } = {}) {
       const desired = mode === 'minimal' || mode === 'progress' ? mode : 'full';
-      const write = (key, value) => {
-        localStorage.setItem(key, JSON.stringify(value));
-      };
+      const fallbackOrder =
+        desired === 'full'
+          ? ['full', 'minimal', 'progress']
+          : desired === 'minimal'
+            ? ['minimal', 'progress']
+            : ['progress'];
+      const levels =
+        storagePolicy.progressOnly && fallbackOrder[0] === 'full'
+          ? fallbackOrder.slice(1)
+          : fallbackOrder;
 
-      try {
-        if (desired === 'full') {
-          const snap = buildStateSnapshot('full', reason);
-          write(stateKeys.full, snap);
-          try {
-            localStorage.removeItem(stateKeys.minimal);
-          } catch {}
-          return { ok: true, kind: 'full' };
+      for (const level of levels) {
+        const snap = buildStateSnapshot(level, reason);
+        const key = level === 'full' ? stateKeys.full : stateKeys.minimal;
+        const writeRes = storageSetJson(key, snap);
+        if (!writeRes.ok) {
+          noteStorageFailure(writeRes.errorType, level);
+          if (!silent) {
+            console.warn(`Failed to save ${level} state:`, writeRes.errorType);
+          }
+          continue;
         }
-      } catch (err) {
-        if (!silent) console.warn('Failed to save full state:', err);
+        if (level === 'full') storageRemove(stateKeys.minimal);
+        return { ok: true, kind: level === 'full' ? 'full' : 'minimal', storageLevel: level };
       }
 
-      try {
-        const snap = buildStateSnapshot('minimal', reason);
-        write(stateKeys.minimal, snap);
-        return { ok: true, kind: 'minimal' };
-      } catch (err) {
-        if (!silent) console.warn('Failed to save minimal state:', err);
-      }
-
-      try {
-        const snap = buildStateSnapshot('progress', reason);
-        write(stateKeys.minimal, snap);
-        return { ok: true, kind: 'minimal' };
-      } catch (err) {
-        if (!silent) console.warn('Failed to save progress state:', err);
-        return { ok: false, kind: null };
-      }
+      return { ok: false, kind: null, storageLevel: null };
     }
 
     function restoreFromSavedState(state, kind) {
-      if (!state || state.pageLink !== pageLink) return false;
+      const migrated = migrateStateSnapshotToV2(state);
+      if (!migrated || migrated.pageLink !== pageLink) return false;
       restoringState = true;
       try {
         for (const xhr of activeRequests) {
@@ -2350,62 +2894,75 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         activePageIndexes.clear();
         inFlight = 0;
 
-        stopRequested = Boolean(state.stopRequested);
-        paused = Boolean(state.paused);
-        scanEnd = state.end && typeof state.end === 'object' ? state.end : null;
+        stopRequested = Boolean(migrated.stopRequested);
+        paused = Boolean(migrated.paused);
+        scanEnd = migrated.end && typeof migrated.end === 'object' ? migrated.end : null;
 
-        if (state.pagination && typeof state.pagination === 'object') {
-          if (state.pagination.mode) config.pagination.mode = state.pagination.mode;
-          if (state.pagination.param) config.pagination.param = state.pagination.param;
-          if (Number.isFinite(state.pagination.pageBase))
-            config.pagination.pageBase = state.pagination.pageBase;
+        if (migrated.pagination && typeof migrated.pagination === 'object') {
+          if (migrated.pagination.mode) config.pagination.mode = migrated.pagination.mode;
+          if (migrated.pagination.param) config.pagination.param = migrated.pagination.param;
+          if (Number.isFinite(migrated.pagination.pageBase))
+            config.pagination.pageBase = migrated.pagination.pageBase;
         }
 
-        if (scanMode === 'id-range' && state.idRange && typeof state.idRange === 'object') {
-          if (Number.isFinite(state.idRange.startId))
-            config.idRange.startId = state.idRange.startId;
-          if (Number.isFinite(state.idRange.endId)) config.idRange.endId = state.idRange.endId;
-          if (Number.isFinite(state.idRange.stopAfterMissing))
-            config.idRange.stopAfterMissing = state.idRange.stopAfterMissing;
-          if (state.idRange.scoreBatch && typeof state.idRange.scoreBatch === 'object') {
-            if (typeof state.idRange.scoreBatch.enabled === 'boolean')
-              config.idRange.scoreBatch.enabled = state.idRange.scoreBatch.enabled;
-            if (Number.isFinite(state.idRange.scoreBatch.size))
-              config.idRange.scoreBatch.size = state.idRange.scoreBatch.size;
+        if (scanMode === 'id-range' && migrated.idRange && typeof migrated.idRange === 'object') {
+          if (Number.isFinite(migrated.idRange.startId))
+            config.idRange.startId = migrated.idRange.startId;
+          if (Number.isFinite(migrated.idRange.endId))
+            config.idRange.endId = migrated.idRange.endId;
+          if (Number.isFinite(migrated.idRange.stopAfterMissing))
+            config.idRange.stopAfterMissing = migrated.idRange.stopAfterMissing;
+          if (migrated.idRange.scoreBatch && typeof migrated.idRange.scoreBatch === 'object') {
+            if (typeof migrated.idRange.scoreBatch.enabled === 'boolean')
+              config.idRange.scoreBatch.enabled = migrated.idRange.scoreBatch.enabled;
+            if (Number.isFinite(migrated.idRange.scoreBatch.size))
+              config.idRange.scoreBatch.size = migrated.idRange.scoreBatch.size;
           }
         }
 
-        if (Number.isFinite(state.scanStartPage)) config.startPage = state.scanStartPage;
+        if (Number.isFinite(migrated.scanStartPage)) config.startPage = migrated.scanStartPage;
 
-        const elapsed = Number.isFinite(state.elapsedMs) ? state.elapsedMs : null;
+        const elapsed = Number.isFinite(migrated.elapsedMs) ? migrated.elapsedMs : null;
         if (elapsed != null && elapsed >= 0) startedAt = Date.now() - elapsed;
 
-        pageSize = Number.isFinite(state.pageSize) ? state.pageSize : pageSize;
-        totalProblems = Number.isFinite(state.totalProblems) ? state.totalProblems : totalProblems;
-        totalPages = Number.isFinite(state.totalPages) ? state.totalPages : totalPages;
+        pageSize = Number.isFinite(migrated.pageSize) ? migrated.pageSize : pageSize;
+        totalProblems = Number.isFinite(migrated.totalProblems)
+          ? migrated.totalProblems
+          : totalProblems;
+        totalPages = Number.isFinite(migrated.totalPages) ? migrated.totalPages : totalPages;
 
-        if (state.stats && typeof state.stats === 'object') {
-          stats.solved = Number.isFinite(state.stats.solved) ? state.stats.solved : 0;
-          stats.tried = Number.isFinite(state.stats.tried) ? state.stats.tried : 0;
-          stats.unattempted = Number.isFinite(state.stats.unattempted)
-            ? state.stats.unattempted
+        if (migrated.stats && typeof migrated.stats === 'object') {
+          stats.solved = Number.isFinite(migrated.stats.solved) ? migrated.stats.solved : 0;
+          stats.tried = Number.isFinite(migrated.stats.tried) ? migrated.stats.tried : 0;
+          stats.unattempted = Number.isFinite(migrated.stats.unattempted)
+            ? migrated.stats.unattempted
             : 0;
-          stats.total = Number.isFinite(state.stats.total) ? state.stats.total : 0;
-          stats.pages = Number.isFinite(state.stats.pages) ? state.stats.pages : 0;
-          stats.missing = Number.isFinite(state.stats.missing) ? state.stats.missing : 0;
-          stats.forbidden = Number.isFinite(state.stats.forbidden) ? state.stats.forbidden : 0;
+          stats.total = Number.isFinite(migrated.stats.total) ? migrated.stats.total : 0;
+          stats.pages = Number.isFinite(migrated.stats.pages) ? migrated.stats.pages : 0;
+          stats.missing = Number.isFinite(migrated.stats.missing) ? migrated.stats.missing : 0;
+          stats.forbidden = Number.isFinite(migrated.stats.forbidden)
+            ? migrated.stats.forbidden
+            : 0;
         }
 
         allProblems.length = 0;
         seenProblemIds.clear();
 
-        const restored = restoreProblemsFromSnapshot(state);
+        const restored = restoreProblemsFromSnapshot(migrated);
         for (const p of restored.allProblems) allProblems.push(p);
         for (const id of restored.seenProblemIds) seenProblemIds.add(id);
 
-        if (state.filters && typeof state.filters === 'object') {
+        filterState.statuses.clear();
+        filterState.statuses.add('tried');
+        filterState.statuses.add('unattempted');
+        filterState.includeUnknownScore = true;
+        filterState.scoreMin = null;
+        filterState.scoreMax = null;
+        filterState.searchQuery = '';
+
+        if (migrated.filters && typeof migrated.filters === 'object') {
           const statuses = new Set(
-            Array.isArray(state.filters.statuses) ? state.filters.statuses : []
+            Array.isArray(migrated.filters.statuses) ? migrated.filters.statuses : []
           );
           filterState.statuses.clear();
           for (const s of ['solved', 'tried', 'unattempted']) {
@@ -2415,43 +2972,45 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
             filterState.statuses.add('tried');
             filterState.statuses.add('unattempted');
           }
-          filterState.includeUnknownScore = Boolean(state.filters.includeUnknownScore);
-          filterState.scoreMin = Number.isFinite(state.filters.scoreMin)
-            ? state.filters.scoreMin
+          filterState.includeUnknownScore = Boolean(migrated.filters.includeUnknownScore);
+          filterState.scoreMin = Number.isFinite(migrated.filters.scoreMin)
+            ? migrated.filters.scoreMin
             : null;
-          filterState.scoreMax = Number.isFinite(state.filters.scoreMax)
-            ? state.filters.scoreMax
+          filterState.scoreMax = Number.isFinite(migrated.filters.scoreMax)
+            ? migrated.filters.scoreMax
             : null;
+          filterState.searchQuery =
+            typeof migrated.filters.searchQuery === 'string' ? migrated.filters.searchQuery : '';
         }
 
-        if (state.sorted && typeof state.sorted === 'object') {
+        if (migrated.sorted && typeof migrated.sorted === 'object') {
           for (const k of Object.keys(sorted)) {
-            sorted[k] = Number.isFinite(state.sorted[k]) ? state.sorted[k] : 0;
+            sorted[k] = Number.isFinite(migrated.sorted[k]) ? migrated.sorted[k] : 0;
           }
         }
 
         pageQueue.length = 0;
         deferredPageRequests.clear();
-        queueInitialized = Boolean(state.queueInitialized);
-        if (Array.isArray(state.pageQueue)) {
-          for (const n of state.pageQueue) if (Number.isFinite(n)) pageQueue.push(n);
+        queueInitialized = Boolean(migrated.queueInitialized);
+        if (Array.isArray(migrated.pageQueue)) {
+          for (const n of migrated.pageQueue) if (Number.isFinite(n)) pageQueue.push(n);
         }
-        if (Array.isArray(state.deferred)) {
-          for (const [pageIndex, retryCount] of state.deferred) {
+        if (Array.isArray(migrated.deferred)) {
+          for (const [pageIndex, retryCount] of migrated.deferred) {
             if (Number.isFinite(pageIndex) && Number.isFinite(retryCount)) {
               deferredPageRequests.set(pageIndex, retryCount);
             }
           }
         }
-        nextSequentialPage = Number.isFinite(state.nextSequentialPage)
-          ? state.nextSequentialPage
+        nextSequentialPage = Number.isFinite(migrated.nextSequentialPage)
+          ? migrated.nextSequentialPage
           : null;
-        if (nextSequentialPage == null && Number.isFinite(state.resumeFromPage)) {
-          nextSequentialPage = state.resumeFromPage;
+        if (nextSequentialPage == null && Number.isFinite(migrated.resumeFromPage)) {
+          nextSequentialPage = migrated.resumeFromPage;
         }
 
-        if (Array.isArray(state.inFlightPages)) {
-          for (const pageIndex of state.inFlightPages) deferPage(pageIndex, 0);
+        if (Array.isArray(migrated.inFlightPages)) {
+          for (const pageIndex of migrated.inFlightPages) deferPage(pageIndex, 0);
         }
 
         finished = Boolean(scanEnd?.finished);
@@ -2465,7 +3024,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         renderResults();
         updateProgress(inFlight);
 
-        if (kind === 'minimal' && state.storageLevel === 'progress') {
+        if (kind === 'minimal' && migrated.storageLevel === 'progress') {
           addLog(
             '<span style="color:#b35c00;"><b>Notă:</b> stare salvată doar ca progres; lista completă nu este disponibilă.</span>'
           );
@@ -2489,7 +3048,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         now - lastAutosaveAt < autosaveConfig.everyMs
       )
         return;
-      const res = saveScanState({ mode: 'minimal', reason: reason || 'autosave', silent: true });
+      const res = saveScanState({ mode: 'progress', reason: reason || 'autosave', silent: true });
       if (!res.ok) {
         autosaveDisabled = true;
         addLog(
@@ -2502,8 +3061,18 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
     }
 
     function schedule(fn) {
-      if (config.delayMs > 0) setTimeout(fn, config.delayMs);
+      const effectiveDelayMs = getEffectiveDelayMs();
+      if (effectiveDelayMs > 0) setTimeout(fn, effectiveDelayMs);
       else fn();
+    }
+
+    function parseHtmlDocument(responseText) {
+      const parser = new DOMParser();
+      return parser.parseFromString(String(responseText || ''), 'text/html');
+    }
+
+    function getRetryDelayLabel(delayMs) {
+      return `${(delayMs / 1000).toFixed(delayMs >= 1000 ? 1 : 2)}s`;
     }
 
     function parseIdRangeScoreValue(raw) {
@@ -2542,13 +3111,19 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       for (let id = batchStart; id <= batchEnd; id++) ids.push(id);
 
       idRangeScoreBatchInFlight.add(batchStart);
-      const xhr = new XMLHttpRequest();
-      activeRequests.add(xhr);
+      const controller = new AbortController();
+      activeRequests.add(controller);
+      let timeoutTriggered = false;
+      const timeoutId = setTimeout(() => {
+        timeoutTriggered = true;
+        controller.abort();
+      }, config.timeoutMs);
       let finalized = false;
       const finalize = () => {
         if (finalized) return;
         finalized = true;
-        activeRequests.delete(xhr);
+        clearTimeout(timeoutId);
+        activeRequests.delete(controller);
         idRangeScoreBatchInFlight.delete(batchStart);
       };
 
@@ -2557,105 +3132,95 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         location?.origin || 'https://www.pbinfo.ro'
       );
       url.searchParams.set('ids', ids.join(','));
+      fetch(url.toString(), {
+        method: 'GET',
+        signal: controller.signal,
+        credentials: 'include',
+      })
+        .then(async (res) => {
+          const responseText = await res.text();
+          if (stopRequested || finished || restoringState) {
+            finalize();
+            return;
+          }
 
-      xhr.open('GET', url.toString());
-      xhr.timeout = config.timeoutMs;
-      xhr.onload = () => {
-        const responseText = xhr.responseText || xhr.response || '';
-        if (stopRequested || finished || restoringState) {
-          finalize();
-          return;
-        }
-
-        if (isLikelyPbinfoBlockedHtml(responseText)) {
-          if (retryCount < maxRetriesPerPage) {
-            const delay = 1000 * (retryCount + 1);
-            if (!idRangeWarnedAboutScoreBatch) {
-              idRangeWarnedAboutScoreBatch = true;
-              addLog(
-                '<span style="color:#b35c00;"><b>Atenție:</b> am detectat o pagină de verificare (posibil Cloudflare) la request-ul de scoruri (batch). Folosește delay mai mare / concurență mai mică.</span>'
-              );
+          if (isLikelyPbinfoBlockedHtml(responseText)) {
+            noteAdaptiveFailure('blocked');
+            if (retryCount < maxRetriesPerPage) {
+              const delay = getRetryDelayMs(retryCount);
+              if (!idRangeWarnedAboutScoreBatch) {
+                idRangeWarnedAboutScoreBatch = true;
+                addLog(
+                  '<span style="color:#b35c00;"><b>Atenție:</b> am detectat o pagină de verificare (posibil Cloudflare) la request-ul de scoruri (batch). Folosește delay mai mare / concurență mai mică.</span>'
+                );
+              }
+              finalize();
+              setTimeout(() => fetchIdRangeScoreBatch(batchStart, retryCount + 1), delay);
+              return;
             }
             finalize();
-            setTimeout(() => fetchIdRangeScoreBatch(batchStart, retryCount + 1), delay);
+            finishScan({
+              complete: false,
+              reason:
+                'Blocare detectată la fetch-ul de scoruri (batch). Încearcă delay mai mare și/sau concurență mai mică.',
+            });
             return;
           }
-          finalize();
-          finishScan({
-            complete: false,
-            reason:
-              'Blocare detectată la fetch-ul de scoruri (batch). Încearcă delay mai mare și/sau concurență mai mică.',
-          });
-          return;
-        }
 
-        if (xhr.status !== 200) {
-          if (retryCount < maxRetriesPerPage) {
-            const delay = 1000 * (retryCount + 1);
+          if (res.status !== 200) {
+            noteAdaptiveFailure('http');
+            if (retryCount < maxRetriesPerPage) {
+              const delay = getRetryDelayMs(retryCount);
+              finalize();
+              setTimeout(() => fetchIdRangeScoreBatch(batchStart, retryCount + 1), delay);
+              return;
+            }
             finalize();
+            idRangeScoreBatchFailed.add(batchStart);
+            addLog(
+              `<span style="color:#b35c00;"><b>Score batch:</b> eșuat pentru ${batchStart}-${batchEnd} (status ${res.status}); continui fără scoruri batch.</span>`
+            );
+            schedule(kick);
+            return;
+          }
+
+          let payload = null;
+          try {
+            payload = typeof responseText === 'string' ? JSON.parse(responseText) : responseText;
+          } catch {
+            payload = null;
+          }
+
+          const data = Array.isArray(payload?.data) ? payload.data : [];
+          for (const item of data) {
+            const id = parseInt(item?.id_problema, 10);
+            if (!Number.isFinite(id)) continue;
+            const raw = item?.scor == null ? '-' : String(item.scor);
+            const parsed = parseIdRangeScoreValue(raw);
+            idRangeScoreCache.set(id, { raw: parsed.raw, value: parsed.value });
+          }
+
+          noteAdaptiveSuccess();
+          finalize();
+          schedule(kick);
+        })
+        .catch((err) => {
+          finalize();
+          if (stopRequested || finished || restoringState) return;
+          if (err?.name === 'AbortError' && !timeoutTriggered) return;
+
+          noteAdaptiveFailure('network');
+          if (retryCount < maxRetriesPerPage) {
+            const delay = getRetryDelayMs(retryCount);
             setTimeout(() => fetchIdRangeScoreBatch(batchStart, retryCount + 1), delay);
             return;
           }
-          finalize();
           idRangeScoreBatchFailed.add(batchStart);
           addLog(
-            `<span style="color:#b35c00;"><b>Score batch:</b> eșuat pentru ${batchStart}-${batchEnd} (status ${xhr.status}); continui fără scoruri batch.</span>`
+            `<span style="color:#b35c00;"><b>Score batch:</b> ${timeoutTriggered ? 'timeout' : 'eroare rețea'} pentru batch ${batchStart}-${batchEnd}; continui fără scoruri batch.</span>`
           );
           schedule(kick);
-          return;
-        }
-
-        let payload = null;
-        try {
-          payload = typeof responseText === 'string' ? JSON.parse(responseText) : responseText;
-        } catch {
-          payload = null;
-        }
-
-        const data = Array.isArray(payload?.data) ? payload.data : [];
-        for (const item of data) {
-          const id = parseInt(item?.id_problema, 10);
-          if (!Number.isFinite(id)) continue;
-          const raw = item?.scor == null ? '-' : String(item.scor);
-          const parsed = parseIdRangeScoreValue(raw);
-          idRangeScoreCache.set(id, { raw: parsed.raw, value: parsed.value });
-        }
-
-        finalize();
-        schedule(kick);
-      };
-      xhr.onabort = () => {
-        finalize();
-      };
-      xhr.ontimeout = () => {
-        finalize();
-        if (stopRequested || finished || restoringState) return;
-        if (retryCount < maxRetriesPerPage) {
-          const delay = 1000 * (retryCount + 1);
-          setTimeout(() => fetchIdRangeScoreBatch(batchStart, retryCount + 1), delay);
-          return;
-        }
-        idRangeScoreBatchFailed.add(batchStart);
-        addLog(
-          `<span style="color:#b35c00;"><b>Score batch:</b> timeout pentru batch ${batchStart}-${batchEnd}; continui fără scoruri batch.</span>`
-        );
-        schedule(kick);
-      };
-      xhr.onerror = () => {
-        finalize();
-        if (stopRequested || finished || restoringState) return;
-        if (retryCount < maxRetriesPerPage) {
-          const delay = 1000 * (retryCount + 1);
-          setTimeout(() => fetchIdRangeScoreBatch(batchStart, retryCount + 1), delay);
-          return;
-        }
-        idRangeScoreBatchFailed.add(batchStart);
-        addLog(
-          `<span style="color:#b35c00;"><b>Score batch:</b> eroare rețea pentru batch ${batchStart}-${batchEnd}; continui fără scoruri batch.</span>`
-        );
-        schedule(kick);
-      };
-      xhr.send();
+        });
     }
 
     function getIdRangeScorePrefetchState(id) {
@@ -2748,7 +3313,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     function kick() {
       if (finished || paused) return;
-      if (inFlight >= config.concurrency) return;
+      if (inFlight >= getEffectiveConcurrency()) return;
 
       const deferred = takeDeferred();
       if (deferred) {
@@ -2777,7 +3342,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
 
     function fetchNext() {
       if (finished || paused) return;
-      if (inFlight >= config.concurrency) return;
+      if (inFlight >= getEffectiveConcurrency()) return;
       const next = pageQueue.shift();
       if (next == null) {
         maybeFinish();
@@ -2802,7 +3367,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       for (let i = startAt + 1; i <= cappedTotalPages; i++) pageQueue.push(i);
       queueInitialized = true;
       const pagesToScan = Math.max(0, cappedTotalPages - startAt + 1);
-      const extraWorkers = Math.max(0, Math.min(config.concurrency, pagesToScan) - 1);
+      const extraWorkers = Math.max(0, Math.min(getEffectiveConcurrency(), pagesToScan) - 1);
       for (let i = 0; i < extraWorkers; i++) kick();
     }
 
@@ -2842,20 +3407,26 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
         }
       }
 
-      if (inFlight >= config.concurrency) {
+      if (inFlight >= getEffectiveConcurrency()) {
         deferPage(pageIndex, retryCount);
         return;
       }
       inFlight++;
       updateProgress(inFlight);
-      const xhr = new XMLHttpRequest();
-      activeRequests.add(xhr);
+      const controller = new AbortController();
+      activeRequests.add(controller);
       activePageIndexes.add(pageIndex);
+      let timeoutTriggered = false;
+      const timeoutId = setTimeout(() => {
+        timeoutTriggered = true;
+        controller.abort();
+      }, config.timeoutMs);
       let finalized = false;
       const finalize = () => {
         if (finalized) return;
         finalized = true;
-        activeRequests.delete(xhr);
+        clearTimeout(timeoutId);
+        activeRequests.delete(controller);
         activePageIndexes.delete(pageIndex);
         inFlight = Math.max(0, inFlight - 1);
         updateProgress(inFlight);
@@ -2875,477 +3446,484 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
               param: config.pagination.param,
               pageBase: config.pagination.pageBase,
             });
-      xhr.open('GET', url);
-      xhr.timeout = config.timeoutMs;
-      xhr.onload = () => {
-        const responseText = xhr.responseText || xhr.response || '';
-        if (stopRequested || finished || restoringState) {
-          finalize();
-          return;
-        }
-        const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
-
-        if (isLikelyPbinfoBlockedHtml(responseText)) {
-          if (retryCount < maxRetriesPerPage) {
-            const delay = 1000 * (retryCount + 1);
-            addLog(
-              `Serverul a răspuns cu o pagină de verificare (probabil protecție anti-bot) la ${unitLabel}. Reîncerc în ${delay / 1000}s...`
-            );
+      fetch(url, {
+        method: 'GET',
+        signal: controller.signal,
+        credentials: 'include',
+      })
+        .then(async (res) => {
+          const responseText = await res.text();
+          const responseStatus = res.status;
+          if (stopRequested || finished || restoringState) {
             finalize();
-            setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
             return;
           }
-          finalize();
-          finishScan({
-            complete: false,
-            reason: `Blocare detectată la ${unitLabel} (posibil Cloudflare). Încearcă delay mai mare și/sau concurență mai mică.`,
-          });
-          return;
-        }
+          const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
 
-        if (
-          scanMode === 'id-range' &&
-          (xhr.status === 404 || isLikelyPbinfoNotFoundHtml(responseText))
-        ) {
-          stats.pages++;
-          stats.missing++;
-          idRangeConsecutiveMissing++;
-          maybeAutoSave('id');
-          if (
-            config.idRange.stopAfterMissing > 0 &&
-            idRangeConsecutiveMissing >= config.idRange.stopAfterMissing
-          ) {
+          if (isLikelyPbinfoBlockedHtml(responseText)) {
+            noteAdaptiveFailure('blocked');
+            if (retryCount < maxRetriesPerPage) {
+              const delay = getRetryDelayMs(retryCount);
+              addLog(
+                `Serverul a răspuns cu o pagină de verificare (probabil protecție anti-bot) la ${unitLabel}. Reîncerc în ${getRetryDelayLabel(delay)}...`
+              );
+              finalize();
+              setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
+              return;
+            }
             finalize();
-            pageQueue.length = 0;
-            deferredPageRequests.clear();
             finishScan({
               complete: false,
-              reason: `Am întâlnit ${idRangeConsecutiveMissing} ID-uri consecutive inexistente. Oprire automată (setare PBINFO_GET_UNSOLVED_ID_MISSING_STOP).`,
+              reason: `Blocare detectată la ${unitLabel} (posibil Cloudflare). Încearcă delay mai mare și/sau concurență mai mică.`,
             });
             return;
           }
-          if (stats.pages > 0 && stats.pages % idRangeLogEvery === 0) {
-            const forbiddenSuffix = stats.forbidden > 0 ? ` · 403 ${stats.forbidden}` : '';
-            addLog(
-              `ID ${pageIndex}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}${forbiddenSuffix}.`
-            );
-          }
-          finalize();
-          schedule(kick);
-          return;
-        }
 
-        if (scanMode === 'id-range' && (xhr.status === 401 || xhr.status === 403)) {
-          stats.pages++;
-          stats.forbidden++;
-          idRangeConsecutiveMissing = 0;
-          maybeAutoSave('id');
-
-          if (!idRangeWarnedAboutForbidden) {
-            idRangeWarnedAboutForbidden = true;
-            addLog(
-              `<span style="color:#b35c00;"><b>Notă:</b> unele ID-uri răspund cu 401/403 (Acces interzis). Le sar și continui scanarea.</span>`
-            );
-          }
-
-          const scoreValue =
-            knownIdRangeScore != null && Number.isFinite(knownIdRangeScore)
-              ? knownIdRangeScore
-              : null;
-          if (scoreValue != null && !seenProblemIds.has(pageIndex)) {
-            seenProblemIds.add(pageIndex);
-            allProblems.push({
-              cnt: allProblems.length + 1,
-              id: pageIndex,
-              name: '',
-              link: new URL(
-                `/probleme/${pageIndex}`,
-                location?.origin || 'https://www.pbinfo.ro'
-              ).toString(),
-              difficulty: 3,
-              score: scoreValue,
-              scoreKnown: true,
-              userScore: scoreValue,
-              maxScore: 100,
-              status: scoreValue >= 100 ? 'solved' : 'tried',
-              postedBy_link: '',
-              postedBy_name: '',
-              postedBy_img: '',
-              author: '',
-              source: '',
-            });
-            if (scoreValue >= 100) stats.solved++;
-            else stats.tried++;
-            stats.total++;
-          }
-
-          finalize();
-          schedule(kick);
-          return;
-        }
-
-        if (xhr.status !== 200) {
-          if (retryCount < maxRetriesPerPage) {
-            const delay = 1000 * (retryCount + 1);
-            addLog(
-              `Eroare la ${unitLabel} (status ${xhr.status}). Reîncerc în ${delay / 1000}s...`
-            );
+          if (
+            scanMode === 'id-range' &&
+            (responseStatus === 404 || isLikelyPbinfoNotFoundHtml(responseText))
+          ) {
+            stats.pages++;
+            stats.missing++;
+            idRangeConsecutiveMissing++;
+            maybeAutoSave('id');
+            if (
+              config.idRange.stopAfterMissing > 0 &&
+              idRangeConsecutiveMissing >= config.idRange.stopAfterMissing
+            ) {
+              finalize();
+              pageQueue.length = 0;
+              deferredPageRequests.clear();
+              finishScan({
+                complete: false,
+                reason: `Am întâlnit ${idRangeConsecutiveMissing} ID-uri consecutive inexistente. Oprire automată (setare PBINFO_GET_UNSOLVED_ID_MISSING_STOP).`,
+              });
+              return;
+            }
+            if (stats.pages > 0 && stats.pages % idRangeLogEvery === 0) {
+              const forbiddenSuffix = stats.forbidden > 0 ? ` · 403 ${stats.forbidden}` : '';
+              addLog(
+                `ID ${pageIndex}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}${forbiddenSuffix}.`
+              );
+            }
             finalize();
-            setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
+            schedule(kick);
             return;
           }
-          finalize();
-          finishScan({
-            complete: false,
-            reason: `Eroare la ${unitLabel} (status ${xhr.status})`,
-          });
-          return;
-        }
 
-        if (/invalid request/i.test(responseText)) {
-          if (retryCount < maxRetriesPerPage) {
-            const delay = 1000 * (retryCount + 1);
-            addLog(
-              `Serverul a răspuns cu "Invalid request" la ${unitLabel}. Reîncerc în ${delay / 1000}s...`
-            );
-            finalize();
-            setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
-            return;
-          }
-          finalize();
-          finishScan({
-            complete: false,
-            reason: `Serverul a răspuns cu "Invalid request" la ${unitLabel}`,
-          });
-          return;
-        }
+          if (scanMode === 'id-range' && (responseStatus === 401 || responseStatus === 403)) {
+            stats.pages++;
+            stats.forbidden++;
+            idRangeConsecutiveMissing = 0;
+            maybeAutoSave('id');
 
-        if (scanMode === 'id-range') {
-          stats.pages++;
-          idRangeConsecutiveMissing = 0;
+            if (!idRangeWarnedAboutForbidden) {
+              idRangeWarnedAboutForbidden = true;
+              addLog(
+                `<span style="color:#b35c00;"><b>Notă:</b> unele ID-uri răspund cu 401/403 (Acces interzis). Le sar și continui scanarea.</span>`
+              );
+            }
 
-          const pageEl = document.createElement('div');
-          pageEl.innerHTML = responseText;
-
-          const canonicalAttr = pageEl
-            .querySelector('link[rel="canonical"]')
-            ?.getAttribute?.('href');
-          const link =
-            canonicalAttr != null
-              ? new URL(canonicalAttr, location?.origin || 'https://www.pbinfo.ro').toString()
-              : new URL(
+            const scoreValue =
+              knownIdRangeScore != null && Number.isFinite(knownIdRangeScore)
+                ? knownIdRangeScore
+                : null;
+            if (scoreValue != null && !seenProblemIds.has(pageIndex)) {
+              seenProblemIds.add(pageIndex);
+              allProblems.push({
+                cnt: allProblems.length + 1,
+                id: pageIndex,
+                name: '',
+                link: new URL(
                   `/probleme/${pageIndex}`,
                   location?.origin || 'https://www.pbinfo.ro'
-                ).toString();
+                ).toString(),
+                difficulty: 3,
+                score: scoreValue,
+                scoreKnown: true,
+                userScore: scoreValue,
+                maxScore: 100,
+                status: scoreValue >= 100 ? 'solved' : 'tried',
+                postedBy_link: '',
+                postedBy_name: '',
+                postedBy_img: '',
+                author: '',
+                source: '',
+              });
+              if (scoreValue >= 100) stats.solved++;
+              else stats.tried++;
+              stats.total++;
+            }
 
-          const meta = extractProblemMetaFromProblemPage(pageEl, pageIndex);
-          const rawScoreInfo = extractScoreInfoFromProblemPage(pageEl);
-          const scoreInfo =
-            knownIdRangeScore != null &&
-            Number.isFinite(knownIdRangeScore) &&
-            (rawScoreInfo.userScore == null || !Number.isFinite(rawScoreInfo.userScore))
-              ? { ...rawScoreInfo, userScore: knownIdRangeScore, maxScore: 100 }
-              : rawScoreInfo;
-          const status = classifyProblemStatus(scoreInfo);
-
-          if (!pageEl.querySelector('#scor_utilizator_problema') && !idRangeWarnedAboutScore) {
-            idRangeWarnedAboutScore = true;
-            addLog(
-              `<span style="color:#b35c00;"><b>Atenție:</b> nu pare să fie disponibil punctajul tău pe pagina problemei (lipsește #scor_utilizator_problema). Verifică dacă ești autentificat pe pbinfo.ro.</span>`
-            );
+            finalize();
+            schedule(kick);
+            return;
           }
 
-          if (!seenProblemIds.has(pageIndex)) {
-            seenProblemIds.add(pageIndex);
+          if (responseStatus !== 200) {
+            noteAdaptiveFailure('http');
+            if (retryCount < maxRetriesPerPage) {
+              const delay = getRetryDelayMs(retryCount);
+              addLog(
+                `Eroare la ${unitLabel} (status ${responseStatus}). Reîncerc în ${getRetryDelayLabel(delay)}...`
+              );
+              finalize();
+              setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
+              return;
+            }
+            finalize();
+            finishScan({
+              complete: false,
+              reason: `Eroare la ${unitLabel} (status ${responseStatus})`,
+            });
+            return;
+          }
+
+          if (/invalid request/i.test(responseText)) {
+            noteAdaptiveFailure('http');
+            if (retryCount < maxRetriesPerPage) {
+              const delay = getRetryDelayMs(retryCount);
+              addLog(
+                `Serverul a răspuns cu "Invalid request" la ${unitLabel}. Reîncerc în ${getRetryDelayLabel(delay)}...`
+              );
+              finalize();
+              setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
+              return;
+            }
+            finalize();
+            finishScan({
+              complete: false,
+              reason: `Serverul a răspuns cu "Invalid request" la ${unitLabel}`,
+            });
+            return;
+          }
+
+          if (scanMode === 'id-range') {
+            stats.pages++;
+            idRangeConsecutiveMissing = 0;
+
+            const pageDoc = parseHtmlDocument(responseText);
+
+            const canonicalAttr = pageDoc
+              .querySelector('link[rel="canonical"]')
+              ?.getAttribute?.('href');
+            const link =
+              canonicalAttr != null
+                ? new URL(canonicalAttr, location?.origin || 'https://www.pbinfo.ro').toString()
+                : new URL(
+                    `/probleme/${pageIndex}`,
+                    location?.origin || 'https://www.pbinfo.ro'
+                  ).toString();
+
+            const meta = extractProblemMetaFromProblemPage(pageDoc, pageIndex);
+            const rawScoreInfo = extractScoreInfoFromProblemPage(pageDoc);
+            const scoreInfo =
+              knownIdRangeScore != null &&
+              Number.isFinite(knownIdRangeScore) &&
+              (rawScoreInfo.userScore == null || !Number.isFinite(rawScoreInfo.userScore))
+                ? { ...rawScoreInfo, userScore: knownIdRangeScore, maxScore: 100 }
+                : rawScoreInfo;
+            const status = classifyProblemStatus(scoreInfo);
+
+            if (!pageDoc.querySelector('#scor_utilizator_problema') && !idRangeWarnedAboutScore) {
+              idRangeWarnedAboutScore = true;
+              addLog(
+                `<span style="color:#b35c00;"><b>Atenție:</b> nu pare să fie disponibil punctajul tău pe pagina problemei (lipsește #scor_utilizator_problema). Verifică dacă ești autentificat pe pbinfo.ro.</span>`
+              );
+            }
+
+            if (!seenProblemIds.has(pageIndex)) {
+              seenProblemIds.add(pageIndex);
+              const scoreKnown =
+                scoreInfo.userScore != null && Number.isFinite(scoreInfo.userScore);
+              const maxScore = Number.isFinite(scoreInfo.maxScore) ? scoreInfo.maxScore : 100;
+              const score = scoreKnown ? scoreInfo.userScore : -1;
+              allProblems.push({
+                cnt: allProblems.length + 1,
+                id: pageIndex,
+                name: meta.name,
+                link,
+                difficulty: meta.difficulty,
+                score,
+                scoreKnown,
+                userScore: scoreInfo.userScore,
+                maxScore,
+                status,
+                postedBy_link: meta.postedBy_link,
+                postedBy_name: meta.postedBy_name,
+                postedBy_img: meta.postedBy_img,
+                author: meta.author,
+                source: meta.source,
+              });
+
+              if (status === 'solved') stats.solved++;
+              else if (status === 'tried') stats.tried++;
+              else stats.unattempted++;
+              stats.total++;
+
+              if (
+                shouldDebugDump(pageIndex) &&
+                (scoreInfo.candidates.length === 0 || status === 'unattempted')
+              ) {
+                debugDumped++;
+                console.log('pbinfo-get-unsolved debug problem page:', {
+                  id: pageIndex,
+                  name: meta.name,
+                  link,
+                  scoreInfo: { userScore: scoreInfo.userScore, maxScore: scoreInfo.maxScore },
+                  candidates: scoreInfo.candidates,
+                });
+                if (debugIncludeHtml) {
+                  console.log(
+                    'pbinfo-get-unsolved debug problem html:',
+                    responseText.slice(0, 5000)
+                  );
+                }
+              }
+            }
+
+            if (stats.pages > 0 && stats.pages % idRangeLogEvery === 0) {
+              const forbiddenSuffix = stats.forbidden > 0 ? ` · 403 ${stats.forbidden}` : '';
+              addLog(
+                `ID ${pageIndex}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}${forbiddenSuffix}.`
+              );
+            }
+
+            maybeAutoSave('id');
+            maybeLiveRender();
+            noteAdaptiveSuccess();
+            finalize();
+            schedule(kick);
+            return;
+          }
+
+          const pageDoc = parseHtmlDocument(responseText);
+          const cards = pageDoc.querySelectorAll('div.card.mb-3');
+
+          if (pageIndex === firstFetchedPageIndex) {
+            if (pageSize == null) {
+              if (pageIndex === 1 && cards.length > 0) {
+                pageSize = cards.length;
+                addLog(`Page size detectată automat: ${pageSize}.`);
+              } else {
+                pageSize = effectivePageSize;
+                addLog(
+                  `Page size implicită: ${pageSize} (pentru resume; setează PBINFO_GET_UNSOLVED_PAGE_SIZE dacă e diferit).`
+                );
+              }
+            }
+            if (totalProblems == null) {
+              const t = parseTotalProblems(responseText);
+              if (Number.isFinite(t)) totalProblems = t;
+            }
+            if (Number.isFinite(totalProblems) && Number.isFinite(pageSize)) {
+              totalPages = Math.ceil(totalProblems / pageSize);
+            }
+            updateProgress(inFlight);
+            if (!queueInitialized && Number.isFinite(totalPages)) {
+              addLog(
+                `Total detectat: ${totalProblems} probleme · ${totalPages} pagini · pageSize=${pageSize} · startPage=${config.startPage} · concurență=${config.concurrency}.`
+              );
+              initQueueFromTotalPages();
+            }
+          }
+
+          if (cards.length === 0) {
+            const t = totalProblems ?? parseTotalProblems(responseText);
+            if (Number.isFinite(t) && startOffset >= t) {
+              finalize();
+              if (queueInitialized) {
+                pageQueue.length = 0;
+                maybeFinish();
+                return;
+              }
+              finishScan({ complete: true });
+              return;
+            }
+            if (retryCount < maxRetriesPerPage) {
+              const delay = getRetryDelayMs(retryCount);
+              const hint = Number.isFinite(t) ? `0 probleme, dar total=${t}` : '0 probleme';
+              addLog(
+                `Pagina ${pageIndex} pare goală (${hint}). Reîncerc în ${getRetryDelayLabel(delay)}...`
+              );
+              finalize();
+              setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
+              return;
+            }
+            const hint = Number.isFinite(t)
+              ? `Pagina ${pageIndex} goală deși totalul este ${t}`
+              : `Pagina ${pageIndex} goală`;
+            finalize();
+            finishScan({ complete: false, reason: hint });
+            return;
+          }
+
+          stats.pages++;
+
+          let pageSolved = 0;
+          let pageTried = 0;
+          let pageUnattempted = 0;
+          let totalCount = 0;
+          let parseFailCount = 0;
+          let idFailCount = 0;
+
+          for (let card of cards) {
+            const codeEl = card.querySelector('code');
+            if (!codeEl) continue;
+            const idText = normalizeSpace(codeEl.textContent);
+            const idMatch = /(\d+)/.exec(idText);
+            const id = idMatch ? parseInt(idMatch[1], 10) : NaN;
+            if (!Number.isFinite(id)) {
+              idFailCount++;
+              if (debugEnabled && debugDumped < debugDumpLimit && !debugIds) {
+                debugDumpCard(card, { id: null, name: null, link: null, scoreInfo: null });
+              }
+              continue;
+            }
+            if (seenProblemIds.has(id)) continue;
+            seenProblemIds.add(id);
+            totalCount++;
+            // name and link
+            let name = '';
+            let link = '';
+            const nameAnchor = card.querySelector('h5.card-title a');
+            if (nameAnchor) {
+              name = nameAnchor.innerText.trim();
+              link = nameAnchor.href.trim();
+            }
+            // difficulty
+            let difficulty = 3;
+            const diffEl = card.querySelector('span[title="Dificultate"]');
+            if (diffEl) {
+              const txt = diffEl.innerText.trim().toLowerCase();
+              if (txt.includes('ușo')) difficulty = 0;
+              else if (txt.includes('med')) difficulty = 1;
+              else if (txt.includes('dific')) difficulty = 2;
+              else difficulty = 3;
+            }
+            // posted by
+            let pbLink = '',
+              pbName = '',
+              pbImg = '';
+            const pbAnchor = card.querySelector('span[title="Postată de"] a');
+            if (pbAnchor) {
+              pbLink = pbAnchor.href;
+              pbName = pbAnchor.innerText.trim();
+              const img = pbAnchor.querySelector('img');
+              if (img) {
+                pbImg = img.src;
+                try {
+                  const host = new URL(pbImg).hostname;
+                  if (host === 'www.gravatar.com') pbImg = pbImg.replace(/&s=\d+/i, '&s=128');
+                  else if (host === 'www.pbinfo.ro')
+                    pbImg = pbImg.replace(/&gsize=\d+/i, '&gsize=128');
+                } catch {}
+              }
+            }
+            // author
+            let author = '';
+            const authorSpan = card.querySelector('span[title="Autor"]');
+            if (authorSpan) author = normalizeSpace(authorSpan.textContent);
+            // source
+            let source = '';
+            const srcBlock = card.querySelector('blockquote[title="Sursa problemei"]');
+            if (srcBlock) source = srcBlock.innerText.trim();
+            const scoreInfo = extractScoreInfoFromCard(card);
+            const status = classifyProblemStatus(scoreInfo);
+
+            if (scoreInfo.candidates.length === 0) parseFailCount++;
+            if (status === 'solved') {
+              pageSolved++;
+              stats.solved++;
+            } else if (status === 'tried') {
+              pageTried++;
+              stats.tried++;
+            } else {
+              pageUnattempted++;
+              stats.unattempted++;
+            }
+            stats.total++;
+
             const scoreKnown = scoreInfo.userScore != null && Number.isFinite(scoreInfo.userScore);
             const maxScore = Number.isFinite(scoreInfo.maxScore) ? scoreInfo.maxScore : 100;
             const score = scoreKnown ? scoreInfo.userScore : -1;
             allProblems.push({
               cnt: allProblems.length + 1,
-              id: pageIndex,
-              name: meta.name,
+              id,
+              name,
               link,
-              difficulty: meta.difficulty,
+              difficulty,
               score,
               scoreKnown,
               userScore: scoreInfo.userScore,
               maxScore,
               status,
-              postedBy_link: meta.postedBy_link,
-              postedBy_name: meta.postedBy_name,
-              postedBy_img: meta.postedBy_img,
-              author: meta.author,
-              source: meta.source,
+              postedBy_link: pbLink,
+              postedBy_name: pbName,
+              postedBy_img: pbImg,
+              author,
+              source,
             });
 
-            if (status === 'solved') stats.solved++;
-            else if (status === 'tried') stats.tried++;
-            else stats.unattempted++;
-            stats.total++;
-
             if (
-              shouldDebugDump(pageIndex) &&
+              shouldDebugDump(id) &&
               (scoreInfo.candidates.length === 0 || status === 'unattempted')
             ) {
-              debugDumped++;
-              console.log('pbinfo-get-unsolved debug problem page:', {
-                id: pageIndex,
-                name: meta.name,
-                link,
-                scoreInfo: { userScore: scoreInfo.userScore, maxScore: scoreInfo.maxScore },
-                candidates: scoreInfo.candidates,
-              });
-              if (debugIncludeHtml) {
-                console.log('pbinfo-get-unsolved debug problem html:', responseText.slice(0, 5000));
-              }
+              debugDumpCard(card, { id, name, link, scoreInfo });
             }
           }
 
-          if (stats.pages > 0 && stats.pages % idRangeLogEvery === 0) {
-            const forbiddenSuffix = stats.forbidden > 0 ? ` · 403 ${stats.forbidden}` : '';
+          const scoreUnavailable = pageUnattempted === totalCount;
+          const scoreWarning = scoreUnavailable ? ' (punctaj indisponibil pentru toate)' : '';
+          const parseFailSuffix = parseFailCount > 0 ? ` · parseFail=${parseFailCount}` : '';
+          const idFailSuffix = idFailCount > 0 ? ` · idFail=${idFailCount}` : '';
+          addLog(
+            `Pagina ${pageIndex}: rezolvate ${pageSolved}, încercate ${pageTried}, neîncercate ${pageUnattempted} (total ${totalCount})${scoreWarning}${parseFailSuffix}${idFailSuffix}.`
+          );
+          if (pageIndex === firstFetchedPageIndex && totalCount > 0 && scoreUnavailable) {
             addLog(
-              `ID ${pageIndex}: progres (${stats.pages} scanate) · găsite ${stats.total} · 404 ${stats.missing}${forbiddenSuffix}.`
+              `<span style="color:#b35c00;"><b>Atenție:</b> nu pare să fie disponibil punctajul tău pe această listă. Verifică dacă ești autentificat pe pbinfo.ro.</span>`
             );
           }
 
-          maybeAutoSave('id');
           maybeLiveRender();
+          maybeAutoSave('page');
+          noteAdaptiveSuccess();
           finalize();
-          schedule(kick);
-          return;
-        }
-
-        const pageEl = document.createElement('div');
-        pageEl.innerHTML = responseText;
-        const cards = pageEl.querySelectorAll('div.card.mb-3');
-
-        if (pageIndex === firstFetchedPageIndex) {
-          if (pageSize == null) {
-            if (pageIndex === 1 && cards.length > 0) {
-              pageSize = cards.length;
-              addLog(`Page size detectată automat: ${pageSize}.`);
-            } else {
-              pageSize = effectivePageSize;
-              addLog(
-                `Page size implicită: ${pageSize} (pentru resume; setează PBINFO_GET_UNSOLVED_PAGE_SIZE dacă e diferit).`
-              );
-            }
-          }
-          if (totalProblems == null) {
-            const t = parseTotalProblems(responseText);
-            if (Number.isFinite(t)) totalProblems = t;
-          }
-          if (Number.isFinite(totalProblems) && Number.isFinite(pageSize)) {
-            totalPages = Math.ceil(totalProblems / pageSize);
-          }
-          updateProgress(inFlight);
-          if (!queueInitialized && Number.isFinite(totalPages)) {
-            addLog(
-              `Total detectat: ${totalProblems} probleme · ${totalPages} pagini · pageSize=${pageSize} · startPage=${config.startPage} · concurență=${config.concurrency}.`
-            );
-            initQueueFromTotalPages();
-          }
-        }
-
-        if (cards.length === 0) {
-          const t = totalProblems ?? parseTotalProblems(responseText);
-          if (Number.isFinite(t) && startOffset >= t) {
-            finalize();
-            if (queueInitialized) {
-              pageQueue.length = 0;
-              maybeFinish();
-              return;
-            }
-            finishScan({ complete: true });
+          if (queueInitialized) {
+            schedule(kick);
             return;
           }
+          nextSequentialPage = pageIndex + 1;
+          schedule(kick);
+        })
+        .catch((err) => {
+          finalize();
+          if (stopRequested || finished || restoringState) return;
+
+          const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
+          const isAbort = err?.name === 'AbortError';
+          if (isAbort && !timeoutTriggered) return;
+
+          noteAdaptiveFailure('network');
           if (retryCount < maxRetriesPerPage) {
-            const delay = 1000 * (retryCount + 1);
-            const hint = Number.isFinite(t) ? `0 probleme, dar total=${t}` : '0 probleme';
-            addLog(`Pagina ${pageIndex} pare goală (${hint}). Reîncerc în ${delay / 1000}s...`);
-            finalize();
+            const delay = getRetryDelayMs(retryCount);
+            if (timeoutTriggered) {
+              addLog(`Timeout la ${unitLabel}. Reîncerc în ${getRetryDelayLabel(delay)}...`);
+            } else {
+              addLog(
+                `Eroare de rețea la ${unitLabel}. Reîncerc în ${getRetryDelayLabel(delay)}...`
+              );
+            }
             setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
             return;
           }
-          const hint = Number.isFinite(t)
-            ? `Pagina ${pageIndex} goală deși totalul este ${t}`
-            : `Pagina ${pageIndex} goală`;
-          finalize();
-          finishScan({ complete: false, reason: hint });
-          return;
-        }
 
-        stats.pages++;
-
-        let pageSolved = 0;
-        let pageTried = 0;
-        let pageUnattempted = 0;
-        let totalCount = 0;
-        let parseFailCount = 0;
-        let idFailCount = 0;
-
-        for (let card of cards) {
-          const codeEl = card.querySelector('code');
-          if (!codeEl) continue;
-          const idText = normalizeSpace(codeEl.textContent);
-          const idMatch = /(\d+)/.exec(idText);
-          const id = idMatch ? parseInt(idMatch[1], 10) : NaN;
-          if (!Number.isFinite(id)) {
-            idFailCount++;
-            if (debugEnabled && debugDumped < debugDumpLimit && !debugIds) {
-              debugDumpCard(card, { id: null, name: null, link: null, scoreInfo: null });
-            }
-            continue;
-          }
-          if (seenProblemIds.has(id)) continue;
-          seenProblemIds.add(id);
-          totalCount++;
-          // name and link
-          let name = '';
-          let link = '';
-          const nameAnchor = card.querySelector('h5.card-title a');
-          if (nameAnchor) {
-            name = nameAnchor.innerText.trim();
-            link = nameAnchor.href.trim();
-          }
-          // difficulty
-          let difficulty = 3;
-          const diffEl = card.querySelector('span[title="Dificultate"]');
-          if (diffEl) {
-            const txt = diffEl.innerText.trim().toLowerCase();
-            if (txt.includes('ușo')) difficulty = 0;
-            else if (txt.includes('med')) difficulty = 1;
-            else if (txt.includes('dific')) difficulty = 2;
-            else difficulty = 3;
-          }
-          // posted by
-          let pbLink = '',
-            pbName = '',
-            pbImg = '';
-          const pbAnchor = card.querySelector('span[title="Postată de"] a');
-          if (pbAnchor) {
-            pbLink = pbAnchor.href;
-            pbName = pbAnchor.innerText.trim();
-            const img = pbAnchor.querySelector('img');
-            if (img) {
-              pbImg = img.src;
-              try {
-                const host = new URL(pbImg).hostname;
-                if (host === 'www.gravatar.com') pbImg = pbImg.replace(/&s=\d+/i, '&s=128');
-                else if (host === 'www.pbinfo.ro')
-                  pbImg = pbImg.replace(/&gsize=\d+/i, '&gsize=128');
-              } catch {}
-            }
-          }
-          // author
-          let author = '';
-          const authorSpan = card.querySelector('span[title="Autor"]');
-          if (authorSpan) author = normalizeSpace(authorSpan.textContent);
-          // source
-          let source = '';
-          const srcBlock = card.querySelector('blockquote[title="Sursa problemei"]');
-          if (srcBlock) source = srcBlock.innerText.trim();
-          const scoreInfo = extractScoreInfoFromCard(card);
-          const status = classifyProblemStatus(scoreInfo);
-
-          if (scoreInfo.candidates.length === 0) parseFailCount++;
-          if (status === 'solved') {
-            pageSolved++;
-            stats.solved++;
-          } else if (status === 'tried') {
-            pageTried++;
-            stats.tried++;
-          } else {
-            pageUnattempted++;
-            stats.unattempted++;
-          }
-          stats.total++;
-
-          const scoreKnown = scoreInfo.userScore != null && Number.isFinite(scoreInfo.userScore);
-          const maxScore = Number.isFinite(scoreInfo.maxScore) ? scoreInfo.maxScore : 100;
-          const score = scoreKnown ? scoreInfo.userScore : -1;
-          allProblems.push({
-            cnt: allProblems.length + 1,
-            id,
-            name,
-            link,
-            difficulty,
-            score,
-            scoreKnown,
-            userScore: scoreInfo.userScore,
-            maxScore,
-            status,
-            postedBy_link: pbLink,
-            postedBy_name: pbName,
-            postedBy_img: pbImg,
-            author,
-            source,
+          finishScan({
+            complete: false,
+            reason: `${timeoutTriggered ? 'Timeout' : 'Eroare de rețea'} la ${unitLabel}`,
           });
-
-          if (
-            shouldDebugDump(id) &&
-            (scoreInfo.candidates.length === 0 || status === 'unattempted')
-          ) {
-            debugDumpCard(card, { id, name, link, scoreInfo });
-          }
-        }
-
-        const scoreUnavailable = pageUnattempted === totalCount;
-        const scoreWarning = scoreUnavailable ? ' (punctaj indisponibil pentru toate)' : '';
-        const parseFailSuffix = parseFailCount > 0 ? ` · parseFail=${parseFailCount}` : '';
-        const idFailSuffix = idFailCount > 0 ? ` · idFail=${idFailCount}` : '';
-        addLog(
-          `Pagina ${pageIndex}: rezolvate ${pageSolved}, încercate ${pageTried}, neîncercate ${pageUnattempted} (total ${totalCount})${scoreWarning}${parseFailSuffix}${idFailSuffix}.`
-        );
-        if (pageIndex === firstFetchedPageIndex && totalCount > 0 && scoreUnavailable) {
-          addLog(
-            `<span style="color:#b35c00;"><b>Atenție:</b> nu pare să fie disponibil punctajul tău pe această listă. Verifică dacă ești autentificat pe pbinfo.ro.</span>`
-          );
-        }
-
-        maybeLiveRender();
-        maybeAutoSave('page');
-        finalize();
-        if (queueInitialized) {
-          schedule(kick);
-          return;
-        }
-        nextSequentialPage = pageIndex + 1;
-        schedule(kick);
-      };
-      xhr.onabort = () => {
-        finalize();
-        if (stopRequested || finished || restoringState) return;
-        const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
-        finishScan({ complete: false, reason: `Request abort la ${unitLabel}` });
-      };
-      xhr.ontimeout = () => {
-        finalize();
-        if (stopRequested || finished || restoringState) return;
-        if (retryCount < maxRetriesPerPage) {
-          const delay = 1000 * (retryCount + 1);
-          const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
-          addLog(`Timeout la ${unitLabel}. Reîncerc în ${delay / 1000}s...`);
-          setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
-          return;
-        }
-        const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
-        finishScan({ complete: false, reason: `Timeout la ${unitLabel}` });
-      };
-      xhr.onerror = () => {
-        finalize();
-        if (stopRequested || finished || restoringState) return;
-        if (retryCount < maxRetriesPerPage) {
-          const delay = 1000 * (retryCount + 1);
-          const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
-          addLog(`Eroare de rețea la ${unitLabel}. Reîncerc în ${delay / 1000}s...`);
-          setTimeout(() => fetchPage(pageIndex, retryCount + 1), delay);
-          return;
-        }
-        const unitLabel = scanMode === 'id-range' ? `ID ${pageIndex}` : `pagina ${pageIndex}`;
-        finishScan({ complete: false, reason: `Eroare de rețea la ${unitLabel}` });
-      };
-      xhr.send();
+        });
     }
 
     if (pendingRestore) {
@@ -3353,7 +3931,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       pendingRestore = null;
       restoreMode = null;
       if (!finished && !stopRequested && !paused) {
-        for (let i = 0; i < config.concurrency; i++) schedule(kick);
+        for (let i = 0; i < getEffectiveConcurrency(); i++) schedule(kick);
       }
     } else {
       if (scanMode === 'id-range') {
@@ -3363,7 +3941,7 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
           const totalIds = endId - startId + 1;
           addLog(`Voi scana ID-uri: ${startId}-${endId} (${totalIds} request-uri).`);
         }
-        if (config.delayMs === 0 && config.concurrency > 1) {
+        if (getEffectiveDelayMs() === 0 && getEffectiveConcurrency() > 1) {
           addLog(
             '<span style="color:#b35c00;"><b>Recomandare:</b> pentru scanare pe ID-uri, setează PBINFO_GET_UNSOLVED_DELAY_MS (ex: 150) și concurență mică (1-2), ca să eviți blocarea.</span>'
           );
@@ -3372,5 +3950,10 @@ if (typeof window === 'undefined' || typeof document === 'undefined') {
       }
       fetchPage(config.startPage, 0);
     }
-  })();
+  }
+
+  window.pbinfoGetUnsolvedStart = runPbinfoGetUnsolved;
+  if (window.PBINFO_GET_UNSOLVED_NO_AUTORUN !== true) {
+    runPbinfoGetUnsolved();
+  }
 }

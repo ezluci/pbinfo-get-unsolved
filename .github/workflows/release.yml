@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to release (optional for manual runs)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Build dist artifacts
+        run: npm run build:bookmarklet
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum \
+            pbinfo-get-unsolved.userscript.js \
+            pbinfo-get-unsolved.min.js \
+            pbinfo-get-unsolved.bookmarklet.txt \
+            > checksums.sha256
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.value }}
+          generate_release_notes: true
+          files: |
+            dist/pbinfo-get-unsolved.userscript.js
+            dist/pbinfo-get-unsolved.min.js
+            dist/pbinfo-get-unsolved.bookmarklet.txt
+            dist/checksums.sha256
